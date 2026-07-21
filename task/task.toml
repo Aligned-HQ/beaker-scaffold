@@ -1,0 +1,39 @@
+schema_version = "1.1"
+
+# Replace this list with every file the verifier needs from the agent output.
+artifacts = [
+    "/workspace/output/result.json",
+]
+
+[task]
+name = "replace-me/scientific-analysis"
+description = "Starter template for a reproducible scientific analysis task; replace the placeholder contract before use."
+
+[metadata]
+author_name = "Replace with author name"
+author_email = "replace@example.com"
+author_organization = "Replace with organization"
+category = "scientific-computing"
+tags = ["scientific-computing", "data-analysis", "python", "pytest"]
+expert_time_estimate_hours = 4.0
+
+difficulty_explanation = "Replace this with a concrete explanation of the scientific bottleneck, the realistic data challenge, the practitioner who performs the work, and why the task requires expert judgment rather than a recipe-to-code translation."
+solution_explanation = "Replace this with a high-level summary of the reference solution's actual computational strategy and the key scientific insights it uses; do not describe an implementation that is not present in solution/."
+verification_explanation = "Replace this with an evidence-based description of the verifier's executable scientific checks and a calibration rationale for every tolerance, range, or inequality. The starter verifier independently recomputes summary statistics from a fixture only to smoke-test the scaffold."
+
+[verifier]
+timeout_sec = 300.0
+environment_mode = "separate"
+user = "root"
+
+[agent]
+timeout_sec = 1800.0
+user = "agent"
+
+[environment]
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+allow_internet = false
