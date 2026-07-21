@@ -41,7 +41,7 @@ failure.
 Create a new task project from the scaffold and choose a concise task slug:
 
 ```bash
-git clone <repository-url> <task-project>
+git clone https://github.com/Aligned-HQ/beaker-scaffold.git <task-project>
 cd <task-project>
 ```
 

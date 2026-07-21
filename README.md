@@ -10,7 +10,7 @@ placeholder content is replaced with a real scientific task.
 1. Clone the repository into a new project directory:
 
    ```bash
-   git clone <repository-url> <task-project>
+   git clone https://github.com/Aligned-HQ/beaker-scaffold.git <task-project>
    cd <task-project>
    ```
 
@@ -106,7 +106,7 @@ machine; task environments must still run without internet access.
 .
 ├── README.md                         # project-level handoff
 ├── harbor_runner.py                  # Docker smoke test and isolated Modal/Harbor runner
-├── docs/authoring-guide.md            # task-fixer/review/trajectory workflow
+├── authoring-guide.md                 # task-fixer/review/trajectory workflow
 ├── task_implemention.toml             # rubric consumed by task-review
 ├── scripts/
 │   ├── check-setup.sh                # local toolchain and Docker check
@@ -147,4 +147,4 @@ The starter `task/` uses `input.csv` and a simple summary only to prove that the
 
 
 ## Authoring checklist
-The detailed checklist and common failure modes are in [`docs/authoring-guide.md`](docs/authoring-guide.md).
+The detailed checklist and common failure modes are in [`authoring-guide.md`](authoring-guide.md).

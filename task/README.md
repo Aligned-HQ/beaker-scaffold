@@ -36,5 +36,5 @@ For a Harbor task, use the task directory rather than the project wrapper:
 
 After a real multi-agent run, the vendored runner writes its Oracle-gated
 evidence under the project-level `trajectories/<run-id>/` directory. Run the
-trajectory review described in [`../docs/authoring-guide.md`](../docs/authoring-guide.md)
+trajectory review described in [`../authoring-guide.md`](../authoring-guide.md)
 against the archived task trajectory directory.
