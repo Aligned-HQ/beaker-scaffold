@@ -249,10 +249,11 @@ if ((DRY_RUN)); then
 fi
 
 if [[ "$RUNNER" = codex ]]; then
-    "$RUNNER_BIN" exec \
+    "$RUNNER_BIN" \
+        --ask-for-approval never \
+        exec \
         -C "$REPO_ROOT" \
         --sandbox workspace-write \
-        --ask-for-approval never \
         --skip-git-repo-check \
         "$PROMPT" 2>&1 | tee -a "$RUN_LOG"
     EXIT_CODE=${PIPESTATUS[0]}
