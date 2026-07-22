@@ -4,7 +4,7 @@ description: Score a Harbor task folder against all criteria in
   `task_implemention.toml` and produce a PASS / FAIL / N/A scorecard with
   evidence. Use when the user asks to "review this task", "score this task",
   "grade the task instructions", "task scorecard", or points the skill at a
-  a task folder for evaluation against the rubric.
+  task folder for evaluation against the rubric.
 ---
 
 Read every criterion in the repo-root `task_implemention.toml`, evaluate each against the target task folder, and emit a single scorecard. Be skeptical and concrete: cite file paths and line numbers as evidence for every verdict.
@@ -73,7 +73,10 @@ If the folder doesn't have this layout, stop and report what's missing — do no
    scorecard file when running outside the project wrapper. When run through
    `scripts/run-task-review.sh`, the wrapper saves the Markdown result as
    `skill-reports/task-review.md`. The final response must contain the complete
-   scorecard, not only a short summary or a path to a file.
+   scorecard, not only a short summary or a path to a file. Keep the final
+   response's `## Practitioner plausibility`, `## Verdicts`, `## Top fixes`, and
+   `## Out of scope / N/A` sections together; the wrapper retains that final
+   review section in the saved report.
 
 ## Scorecard format
 

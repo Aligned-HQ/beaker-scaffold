@@ -231,6 +231,14 @@ write_status_file() {
 }
 
 OUTPUT_TMP="$(mktemp)" || die "could not create temporary skill output file"
+FINAL_OUTPUT_TMP="$(mktemp)" || {
+    rm -f "$OUTPUT_TMP"
+    die "could not create temporary final skill output file"
+}
+STATUS_OUTPUT_TMP="$(mktemp)" || {
+    rm -f "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP"
+    die "could not create temporary status output file"
+}
 
 RUN_ID="$(date -u '+%Y%m%dT%H%M%SZ')-${SKILL}-$$"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -239,6 +247,81 @@ EXIT_CODE=1
 FINALIZED=0
 
 write_status_file "Run" "$STARTED_AT" "$TARGET_REL" || die "could not update $STATUS_FILE"
+
+extract_final_handoff() {
+    local source="$1"
+    local destination="$2"
+
+    awk '
+        function is_status(line, cleaned) {
+            cleaned = line
+            gsub(/[*][*]/, "", cleaned)
+            return cleaned ~ /^[[:space:]]*(Status|Verdict):[[:space:]]*(PASS|FAIL|INCONCLUSIVE)([[:space:]]|$)/
+        }
+        {
+            lines[NR] = $0
+            if (is_status($0)) {
+                start = NR
+            }
+        }
+        END {
+            if (!start) {
+                start = 1
+            }
+            for (line = start; line <= NR; line++) {
+                if (line > start && lines[line] ~ /^[[:space:]]*tokens used([[:space:]]|$)/) {
+                    break
+                }
+                print lines[line]
+            }
+        }
+    ' "$source" > "$destination"
+}
+
+extract_task_review_handoff() {
+    local source="$1"
+    local destination="$2"
+
+    awk '
+        {
+            lines[NR] = $0
+            heading = tolower($0)
+            if (heading ~ /^##[[:space:]]+practitioner[[:space:]]+plausibility[[:space:]]*$/) {
+                start = NR
+            }
+        }
+        END {
+            if (!start) {
+                exit 2
+            }
+            for (line = start; line <= NR; line++) {
+                if (line > start && lines[line] ~ /^[[:space:]]*tokens used([[:space:]]|$)/) {
+                    break
+                }
+                print lines[line]
+            }
+        }
+    ' "$source" > "$destination" || return $?
+}
+
+prepare_report_outputs() {
+    local source="$1"
+
+    case "$SKILL" in
+        task-fixer)
+            extract_final_handoff "$source" "$FINAL_OUTPUT_TMP"
+            ;;
+        task-review)
+            if ! extract_task_review_handoff "$source" "$FINAL_OUTPUT_TMP"; then
+                extract_final_handoff "$source" "$FINAL_OUTPUT_TMP"
+            fi
+            ;;
+        *)
+            cp "$source" "$FINAL_OUTPUT_TMP"
+            ;;
+    esac
+    extract_final_handoff "$source" "$STATUS_OUTPUT_TMP"
+}
 
 skill_result_status() {
     if [[ "$RUN_STATUS" = "DRY_RUN" ]]; then
@@ -249,14 +332,14 @@ skill_result_status() {
         printf '%s\n' 'Fail'
         return
     fi
-    if sed -n '1,100p' "$OUTPUT_TMP" | grep -Eiq \
-        '^[[:space:]]*\*\*(Status|Verdict)\*\*:[[:space:]]*PASS([[:space:]]|$)'; then
+    if sed 's/[*][*]//g' "$STATUS_OUTPUT_TMP" | grep -Ei \
+        '^[[:space:]]*(Status|Verdict):[[:space:]]*PASS([[:space:]]|$)' >/dev/null; then
         printf '%s\n' 'Pass'
-    elif sed -n '1,100p' "$OUTPUT_TMP" | grep -Eiq \
-        '^[[:space:]]*\*\*(Status|Verdict)\*\*:[[:space:]]*(FAIL|INCONCLUSIVE)([[:space:]]|$)'; then
+    elif sed 's/[*][*]//g' "$STATUS_OUTPUT_TMP" | grep -Ei \
+        '^[[:space:]]*(Status|Verdict):[[:space:]]*(FAIL|INCONCLUSIVE)([[:space:]]|$)' >/dev/null; then
         printf '%s\n' 'Fail'
     else
-        printf '%s\n' 'Pass'
+        printf '%s\n' 'Fail'
     fi
 }
 
@@ -279,9 +362,13 @@ write_report() {
         printf '| Exit code | `%s` |\n' "$EXIT_CODE"
         printf '| Skill SHA-256 | `%s` |\n' "$SKILL_SHA256"
         printf '| Agent output SHA-256 | `%s` |\n' "$output_sha256"
-        printf '\n## Agent output\n\n'
-        if [[ -s "$OUTPUT_TMP" ]]; then
-            cat "$OUTPUT_TMP"
+        case "$SKILL" in
+            task-fixer) printf '\n## Final handoff\n\n' ;;
+            task-review) printf '\n## Final review\n\n' ;;
+            *) printf '\n## Agent output\n\n' ;;
+        esac
+        if [[ -s "$FINAL_OUTPUT_TMP" ]]; then
+            cat "$FINAL_OUTPUT_TMP"
             printf '\n'
         else
             printf '_The agent produced no output._\n'
@@ -302,8 +389,12 @@ finalize() {
     fi
     FINALIZED=1
     ended_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    if ! prepare_report_outputs "$OUTPUT_TMP"; then
+        cp "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" || true
+        cp "$OUTPUT_TMP" "$STATUS_OUTPUT_TMP" || true
+    fi
     result_status="$(skill_result_status)"
-    output_sha256="$(sha256_file "$OUTPUT_TMP" 2>/dev/null || true)"
+    output_sha256="$(sha256_file "$FINAL_OUTPUT_TMP" 2>/dev/null || true)"
     if ! write_report "$result_status" "$ended_at" "$output_sha256"; then
         printf 'ERROR: could not write skill report: %s\n' "$REPORT_FILE" >&2
         result_status="Fail"
@@ -312,6 +403,7 @@ finalize() {
         printf 'ERROR: could not update skill status: %s\n' "$STATUS_FILE" >&2
     fi
     rm -f "$OUTPUT_TMP"
+    rm -f "$FINAL_OUTPUT_TMP" "$STATUS_OUTPUT_TMP"
     printf '\nReport: %s\n' "$REPORT_FILE" >&2
     printf 'Status: %s\n' "$result_status" >&2
 }
@@ -333,9 +425,11 @@ each final runtime or separate verifier image must be at most 2 GB
 access to work around a bootstrap or dependency issue.
 
 Use the skill's required workflow and evidence rules. For task-fixer, make the
-smallest task-local edits needed. For task-review and trajectory-review, do not
-edit the task; return the complete requested scorecard or verdict as Markdown,
-not only a summary or a file path. Start the final response with the exact
+smallest task-local edits needed and return only the final handoff, without
+planning, tool transcripts, or duplicated status sections. For task-review and
+trajectory-review, do not edit the task; return the complete requested scorecard
+or verdict as Markdown, not only a summary or a file path. Start the final
+response with the exact
 Markdown line **Status:** PASS when the skill passes and **Status:** FAIL when
 it does not.
 Do not modify skill-reports/ or skill-status.md; the wrapper saves your final
@@ -370,6 +464,11 @@ else
             "$PROMPT"
     ) 2>&1 | tee "$OUTPUT_TMP"
     EXIT_CODE=${PIPESTATUS[0]}
+fi
+
+if ! prepare_report_outputs "$OUTPUT_TMP"; then
+    cp "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" || true
+    cp "$OUTPUT_TMP" "$STATUS_OUTPUT_TMP" || true
 fi
 
 if ((EXIT_CODE == 0)); then

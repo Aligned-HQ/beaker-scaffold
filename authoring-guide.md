@@ -280,9 +280,11 @@ handling, rerun `task-fixer` before running `task-review` again.
 Each wrapper overwrites its Markdown result in `skill-reports/` and updates the
 single `skill-status.md` file. The status is `Run` while the skill is executing,
 then `Pass` or `Fail` when it finishes. Reports include the UTC timestamps,
-runner, target, skill revision hash, exit code, and captured Markdown output. The
-submission check requires passing fixer → review → trajectory-review reports in
-that order. These files are compliance evidence rather than a tamper-proof
+runner, target, skill revision hash, exit code, and either the final task-fixer
+handoff, the final task-review section, or the complete trajectory-review
+verdict Markdown. The submission check requires
+passing fixer → review → trajectory-review reports in that order. These files
+are compliance evidence rather than a tamper-proof
 signature, so inspect the final reports and diff before upload.
 
 Do not treat an Oracle pass as proof that the task is good. The reference

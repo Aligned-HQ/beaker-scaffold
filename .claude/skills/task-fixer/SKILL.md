@@ -180,11 +180,13 @@ prerequisites were verified. A PASS means “ready to attempt the Oracle,” not
 
 ## Output
 
-Return a concise Markdown handoff beginning with `**Status:** PASS` when the
-Oracle prerequisites are ready, or `**Status:** FAIL` when the task is blocked or
-a required check could not be completed. Summarize files changed, checks run,
-and remaining blockers. When run through `scripts/run-task-fixer.sh`, the wrapper
-saves the complete Markdown result as `skill-reports/task-fixer.md`.
+Return only a concise final Markdown handoff beginning with `**Status:** PASS`
+when the Oracle prerequisites are ready, or `**Status:** FAIL` when the task is
+blocked or a required check could not be completed. Do not include planning,
+tool transcripts, duplicated status sections, or token-usage text. Summarize
+files changed, checks run, and remaining blockers. When run through
+`scripts/run-task-fixer.sh`, the wrapper saves only this final handoff in
+`skill-reports/task-fixer.md`.
 
 ## Guardrails
 
