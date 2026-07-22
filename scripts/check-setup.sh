@@ -242,6 +242,14 @@ for skill_name in task-fixer task-review trajectory-review; do
     fi
 done
 
+agents_wheel_helper="${REPO_ROOT}/.agents/skills/task-fixer/scripts/vendor_offline_dependencies.py"
+claude_wheel_helper="${REPO_ROOT}/.claude/skills/task-fixer/scripts/vendor_offline_dependencies.py"
+if [[ -x "$agents_wheel_helper" && -x "$claude_wheel_helper" ]] && cmp -s "$agents_wheel_helper" "$claude_wheel_helper"; then
+    pass_check "Offline dependency helper: task-fixer wheelhouse vendorer is present and mirrored"
+else
+    fail_check "Offline dependency helper is missing, not executable, or differs between skill mirrors." "Restore both task-fixer/scripts/vendor_offline_dependencies.py copies, make them executable, and keep them identical."
+fi
+
 for wrapper in \
     scripts/run-task-fixer.sh \
     scripts/run-task-review.sh \

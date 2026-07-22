@@ -45,6 +45,14 @@ machine; task environments must still run without internet access.
    ./scripts/run-task-fixer.sh task
    ```
 
+   The Codex wrapper gives task-fixer Docker-capable sandbox access by default
+   so it can build and inspect the task images. Use
+   `./scripts/run-task-fixer.sh task --docker-access off` for a static-only
+   run, or `--docker-access on` to make the setting explicit. If dependencies
+   are not already available in an approved offline source, vendor them on the
+   authoring machine with the helper documented in the task-fixer skill, then
+   install them in the Dockerfile with `--no-index --find-links`.
+
 5. Run the task-review script:
 
    ```bash

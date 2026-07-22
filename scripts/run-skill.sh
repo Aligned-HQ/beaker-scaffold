@@ -18,6 +18,7 @@ Skills:
 Options:
   --runner codex|claude|auto  Agent CLI to use (default: auto).
   --target PATH               Explicit target path.
+  --docker-access auto|on|off Allow Codex task-fixer to reach Docker (default: auto).
   --dry-run                   Record the command without invoking an agent.
   -h, --help                  Show this help.
 
@@ -39,6 +40,7 @@ SKILL=""
 TARGET=""
 RUNNER="${SKILL_RUNNER:-auto}"
 DRY_RUN=0
+DOCKER_ACCESS="${TASK_FIXER_DOCKER_ACCESS:-auto}"
 
 while (($# > 0)); do
     case "$1" in
@@ -55,6 +57,11 @@ while (($# > 0)); do
         --target)
             (($# >= 2)) || die "--target requires a path"
             TARGET="$2"
+            shift 2
+            ;;
+        --docker-access)
+            (($# >= 2)) || die "--docker-access requires auto, on, or off"
+            DOCKER_ACCESS="$2"
             shift 2
             ;;
         --dry-run)
@@ -111,6 +118,14 @@ case "$RUNNER" in
         ;;
 esac
 
+case "$DOCKER_ACCESS" in
+    auto|on|off)
+        ;;
+    *)
+        die "--docker-access must be auto, on, or off"
+        ;;
+esac
+
 if [[ "$TARGET" = /* ]]; then
     TARGET_ABS="$TARGET"
 else
@@ -137,6 +152,16 @@ case "$RUNNER" in
         RUNNER_BIN="$(command -v claude)"
         ;;
 esac
+
+# A workspace-write Codex sandbox generally cannot reach the host Docker
+# socket. The task-fixer is the one local skill that must build and inspect
+# task images, so its automatic mode uses Codex's Docker-capable sandbox. This
+# does not bypass the approval policy and can be disabled explicitly when the
+# host Docker daemon is unavailable or the caller wants static-only checks.
+CODEX_SANDBOX="workspace-write"
+if [[ "$RUNNER" = codex && "$SKILL" = task-fixer && "$DOCKER_ACCESS" != off ]]; then
+    CODEX_SANDBOX="danger-full-access"
+fi
 
 SKILL_FILE="${SKILL_ROOT}/${SKILL}/SKILL.md"
 [[ -f "$SKILL_FILE" ]] || die "missing local skill file: $SKILL_FILE"
@@ -356,6 +381,8 @@ write_report() {
         printf '| Run ID | `%s` |\n' "$RUN_ID"
         printf '| Skill | `%s` |\n' "$SKILL"
         printf '| Runner | `%s` |\n' "$RUNNER"
+        printf '| Docker access | `%s` |\n' "$DOCKER_ACCESS"
+        printf '| Codex sandbox | `%s` |\n' "$CODEX_SANDBOX"
         printf '| Target | `%s` |\n' "$TARGET_REL"
         printf '| Started (UTC) | `%s` |\n' "$STARTED_AT"
         printf '| Finished (UTC) | `%s` |\n' "$ended_at"
@@ -424,6 +451,12 @@ each final runtime or separate verifier image must be at most 2 GB
 (2,000,000,000 bytes). Preserve those constraints and do not enable internet
 access to work around a bootstrap or dependency issue.
 
+Docker access mode for this invocation is ${DOCKER_ACCESS}. If this is a Codex
+task-fixer run, Docker access is provided through the wrapper's selected
+${CODEX_SANDBOX} sandbox; use Docker only for the target task's static image
+validation and cleanup. The skill cannot repair a host Docker daemon or grant
+access to an unapproved remote daemon.
+
 Use the skill's required workflow and evidence rules. For task-fixer, make the
 smallest task-local edits needed and return only the final handoff, without
 planning, tool transcripts, or duplicated status sections. For task-review and
@@ -449,7 +482,7 @@ if [[ "$RUNNER" = codex ]]; then
         --ask-for-approval never \
         exec \
         -C "$REPO_ROOT" \
-        --sandbox workspace-write \
+        --sandbox "$CODEX_SANDBOX" \
         --skip-git-repo-check \
         "$PROMPT" 2>&1 | tee "$OUTPUT_TMP"
     EXIT_CODE=${PIPESTATUS[0]}

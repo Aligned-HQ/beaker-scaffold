@@ -256,6 +256,35 @@ Use the project wrapper so the run is recorded in its Markdown report and in
 ./scripts/run-task-fixer.sh task
 ```
 
+When Codex is selected, the wrapper's default `--docker-access auto` mode
+uses its Docker-capable sandbox so task-fixer can reach an already configured
+local Docker daemon. Make it explicit with `--docker-access on`, or use
+`--docker-access off` when you intentionally want static-only checks. This
+permission is for the trusted authoring checkout; it does not repair a denied
+Docker daemon or authorize an unapproved remote context.
+
+For a missing offline Python dependency, derive the packages from the existing
+solution and verifier imports and run the vendoring helper on the authoring
+machine or an approved package mirror. Keep runtime and verifier bundles
+separate when appropriate:
+
+```bash
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/environment/wheels \
+  numpy==1.26.4 pandas==2.2.2
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/tests/wheels \
+  pytest==8.4.1
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/environment/wheels --verify
+```
+
+The helper resolves transitive Linux/amd64 binary wheels, writes a pinned
+`requirements.txt`, and records a hash manifest. Copy the resulting wheelhouse
+into the relevant Docker build context and install with
+`python -m pip install --no-cache-dir --no-index --find-links=/opt/wheels -r /opt/wheels/requirements.txt`; do not download or install packages from
+`tests/test.sh` or at runtime.
+
 ## 5. Run the task-review script
 
 Run `task-review` after the fixer. It must read every criterion in the

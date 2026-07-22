@@ -54,6 +54,69 @@ These constraints apply to the task images:
 Treat a network dependency, unsupported architecture, or image over the size
 cap as an Oracle-readiness failure, not as a reason to weaken the task contract.
 
+## Docker access and offline dependency bundles
+
+This skill cannot grant itself access to a host Docker daemon. When it is run
+through `scripts/run-task-fixer.sh` with Codex, the wrapper's default
+`--docker-access auto` mode uses Codex's `danger-full-access` sandbox so the
+skill can reach an already configured local Docker socket or context. An
+author can make that explicit with:
+
+```bash
+./scripts/run-task-fixer.sh task --docker-access on
+```
+
+Use `--docker-access off` for a static-only run. Full access is a broad local
+permission and is intended only for a trusted task checkout. It does not fix
+the daemon, change socket permissions, or authorize an unapproved remote
+context. If Docker is still denied, inspect the configured contexts and report
+the exact host error while completing all static repairs.
+
+Do not put binary packages in this Markdown skill file. The mirrored helper
+`scripts/vendor_offline_dependencies.py` is the reusable vendoring mechanism.
+Run it on the approved authoring machine or package mirror, not inside a task
+container, because the task environment has no internet. First derive the
+actual imports and versions from the existing task and keep runtime and
+verifier wheelhouses separate when their dependencies differ. For the common
+Python 3.12 dependencies in this scaffold, examples are:
+
+```bash
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/environment/wheels \
+  numpy==1.26.4 pandas==2.2.2
+
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/tests/wheels \
+  pytest==8.4.1
+```
+
+The helper downloads transitive binary wheels for Linux/amd64, writes a
+pinned `requirements.txt`, and records hashes in
+`wheelhouse-manifest.json`. Verify the bundle without contacting an index:
+
+```bash
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/environment/wheels --verify
+```
+
+Use an approved local index or pip configuration for the authoring-time
+download. In each Dockerfile, copy the appropriate wheelhouse and install it
+with `python -m pip install --no-cache-dir --no-index --find-links=/opt/wheels -r /opt/wheels/requirements.txt`; never put the install in `tests/test.sh` or
+runtime execution. Prefer a builder stage when the wheelhouse is large so it
+does not remain in the final image, then rebuild and measure the image.
+Always include the wheelhouse in the task submission and rerun the helper's
+`--verify` mode plus the strict scaffold checks after changing it.
+
+If an approved wheel directory already exists on the authoring host, use it
+without an index:
+
+```bash
+python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
+  --task task --out task/environment/wheels \
+  --find-links /approved/linux-amd64-wheels --no-index \
+  numpy==1.26.4 pandas==2.2.2
+```
+
 ## Required inputs and allowed changes
 
 The target is a single task directory. Confirm the task root before editing and
@@ -79,7 +142,8 @@ build-support files when their contents can be derived from the existing task:
   real verifier image, not an empty placeholder: use `FROM
   --platform=linux/amd64`, define canonical variables, copy the existing test
   entrypoint/modules/data, and pre-install dependencies from an approved local
-  wheelhouse or base image.
+  wheelhouse or base image. If the required wheelhouse is not present, use the
+  bundled vendoring helper before reporting that dependency as unavailable.
 - Create required `environment/data/` or `tests/data/` directories. Use a
   `.gitkeep` only for an intentionally empty directory; copy actual referenced
   fixtures when the verifier needs them. Never fabricate reference data.
@@ -150,12 +214,16 @@ the exact missing path and remedy instead of inventing it.
      agent-bootstrap-only. Remove bootstrap-only `apt-get` blocks when they are
      not needed by the Oracle; do not retain online `curl`, apt, or package
      setup merely for future agent installation;
-   - repair required dependencies without network access when possible: use an
-     approved local base image, a task-local wheelhouse with
-     `pip install --no-index --find-links=...`, or an approved local `.deb`
-     bundle installed with `dpkg`. Copy only the needed bundle into the build
-     context and remove caches afterward. Do not add `pip install`, `apt-get`,
-     or other downloads to `tests/test.sh` or runtime execution;
+   - repair required dependencies without network access when possible: first
+     use the bundled `scripts/vendor_offline_dependencies.py` to populate a
+     task-local wheelhouse from the approved authoring-time package source, then
+     use `pip install --no-cache-dir --no-index --find-links=...`; otherwise use an approved
+     local base image or approved local `.deb` bundle installed with `dpkg`.
+     Copy only the needed bundle into the build context and remove caches
+     afterward. Do not add `pip install`, `apt-get`, or other downloads to
+     `tests/test.sh` or runtime execution. If the helper cannot obtain a wheel
+     for a required package, report the package, target Python/platform, and
+     exact approved-source remedy;
    - if no approved base or local package bundle can satisfy a required import
      or CLI, leave the task policy unchanged and report the dependency blocker;
    - copy every existing runtime input under `environment/data/` into the image,

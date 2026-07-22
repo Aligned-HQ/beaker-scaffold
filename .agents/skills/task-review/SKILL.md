@@ -128,29 +128,12 @@ These are reminders, not overrides — the `guidance` text in `task_implemention
 
 Apply these checks while scoring `instruction_clarity`, `instruction_minimality`, `agentic`, `difficult`, `scientifically_grounded`, `essential_difficulty`, and `expert_time_estimate`. Cite concrete evidence from `instruction.md`, `task.toml`, solution files, and trajectories/logs when available.
 
-- **Real research workflow**: PASS only when the task resembles a genuine multi-step domain workflow that would plausibly take an expert 4+ hours. The difficulty should come from scientific ambiguity, approach selection, interpretation, and validation — not from data-cleaning traps, long schemas, or reading-comprehension burden.
-- **Practitioner plausibility**: Name the likely practitioner role in the notes for at least one relevant verdict, such as "materials informatics scientist", "computational biologist", "microscopist", "clinical data scientist", or "process engineer". PASS only if that practitioner would plausibly perform this workflow in a real lab, company, field study, or analysis setting to support a concrete decision. FAIL when the task is merely a synthetic story around arbitrary transformations, when the workflow omits the validation or domain artifacts a practitioner would need, when no realistic stakeholder would care about the output, or when the work is mostly translating a prescribed recipe into code.
+- **Real research workflow**: PASS when the task resembles a genuine multi-step domain workflow that would plausibly take an expert 4+ hours. The difficulty should come from scientific ambiguity, approach selection, interpretation, and validation — not from data-cleaning traps, long schemas, or reading-comprehension burden.
+- **Practitioner plausibility**: Name the likely practitioner role in the notes for at least one relevant verdict, such as "materials informatics scientist", "computational biologist", "microscopist", "clinical data scientist", or "process engineer". PASS only if that practitioner would plausibly perform this workflow in a real lab, company, field study, or analysis setting to support a concrete decision. FAIL when the task is clearly a synthetic story around arbitrary transformations, when the workflow clearly omits the validation or domain artifacts a practitioner would need, when no realistic stakeholder would care about the output, or when the work is just translating a prescribed recipe into code.
 - **Workflow fidelity**: Compare `solution/process.md` and the verifier's checked outputs against the claimed research workflow. The workflow should include realistic inputs, intermediate decisions, uncertainty or quality checks, and outputs a practitioner would actually use. Penalize tasks whose process file or tests reveal that the "science" is just row counts, hardcoded constants, formatting, or schema conformance.
 - **No step-by-step lab protocol**: FAIL when `instruction.md` gives the model a recipe of formulas, thresholds, ordered steps, exact model choices, or implementation details that reduce the work to translating prose into code. Good tasks state the scientific objective, available data, constraints, and evaluation target while leaving meaningful method choices to the agent.
 - **Heterogeneous tool orchestration**: PASS only when the task requires at least 3-4 substantively different tools, data sources, or computational modes. Examples: web/literature/API lookup, domain CLI or specialist package, numerical/statistical modeling, visualization/QC, structured data processing, simulation, and long-form synthesis. Multiple Python libraries that all serve one local array-computation script do not count as heterogeneous tool use.
 - **Intermediate decision-making**: PASS only when later steps depend on earlier findings. The agent should have to inspect intermediate outputs, choose between plausible approaches, reconcile disagreement across tools/sources, and explain uncertainty.
-
-## Review-only operational checks
-
-These checks help assign rubric verdicts during review. They intentionally avoid the repair playbooks owned by `task-fixer`. If the main problem is mechanical normalization of paths, vendored data, dependencies, artifacts, verifier Dockerfiles, or agent bootstrap readiness, flag the relevant rubric criterion and recommend `task-fixer` rather than reproducing its instructions here.
-
-Apply the client deployment gates above before declaring the task reviewable. Cite
-`task.toml` for `allow_internet`, scan Dockerfiles and helper scripts for network
-operations, and record the measured byte size of both final images when available.
-If the size cannot be measured without building and the user did not authorize
-Docker validation, label that gate UNVERIFIED in the scorecard and do not imply
-that the task is upload-ready. An image over 2 GB or any runtime network
-dependency is a structural/environment failure, not a scientific judgment call.
-
-- **Environment and verifier contract**: Check whether runtime image, verifier mode, artifacts, executable entrypoints, and reward-file behavior are coherent enough for review. Score failures under the existing environment/verifier criteria; do not prescribe the detailed Docker/path edits in this skill.
-- **Reproducibility and data availability**: Check whether required inputs, reference data, and external services are available in a reproducible way. Score non-hermetic behavior under the existing reproducibility/environment criteria and refer mechanical vendoring fixes to `task-fixer`.
-- **Schema and test alignment**: Check whether output schema, numeric tolerances, verifier assertions, and instruction clauses align. Score misalignment directly; keep concrete schema-repair guidance brief.
-- **Coverage and scientific validity**: Check whether tests verify the scientific outcome with meaningful independent assertions, not only existence, row counts, or hardcoded constants.
 
 ## What to do, not do
 
