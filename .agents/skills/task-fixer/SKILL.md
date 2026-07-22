@@ -1,10 +1,10 @@
 ---
 name: task-fixer
-description: Prepare a Harbor task folder to run its Oracle by validating required
-  files, normalizing task metadata, correcting Docker build configuration, and
-  checking canonical paths without editing the instruction, solution, or tests.
-  Use when a task needs to be made Oracle-ready or its environment and metadata
-  need to be repaired.
+description: Prepare a Harbor task folder to run its Oracle by repairing metadata,
+  offline Docker configuration, required build-support files, executable
+  entrypoints, and canonical paths without editing the instruction, solution, or
+  verifier logic. Use when a task needs to be made Oracle-ready or its
+  environment and metadata need to be repaired.
 ---
 
 # Task Fixer
@@ -20,16 +20,20 @@ The task-fixer may edit only task metadata and environment/build-support files:
 
 - `task.toml` and task-local Docker/build metadata;
 - `environment/Dockerfile` and support files used by that Dockerfile;
-- `tests/Dockerfile` and `tests/data/` only when a separate verifier image needs
-  them; the verifier implementation remains read-only;
+- `README.md` when the project scaffold requires reviewer notes;
+- `tests/Dockerfile` and `tests/data/` when the separate verifier image or the
+  project scaffold requires them; the verifier implementation remains read-only;
 - task-local runtime input data that must be vendored for an offline build.
 
 Read `instruction.md`, the solution directory, and the verifier directory to
 discover their contracts and dependencies, but never edit them. In particular,
 never edit `instruction.md`, `solution/solve.py` (or any other solution file),
 `tests/test.sh`, verifier Python files, test thresholds, fixtures, or expected
-outputs. Do not create placeholder solution or test files. If a required repair
-would need one of those files changed, report the blocker for the task author.
+outputs. The content of existing solution and verifier entrypoints is
+read-only, but changing the executable bit on an existing required shell
+entrypoint is allowed. Do not create placeholder solution or test
+implementations. If a required repair would need scientific or verifier content
+changed, report the blocker for the task author.
 
 ## Client deployment constraints
 
@@ -63,9 +67,29 @@ work only inside it. A normal task contains:
 - `tests/test.sh`, the verifier files it references, and any required test data;
 - `tests/Dockerfile` when verifier mode is separate.
 
-The exact solution language and optional data files may vary. Every referenced
-file must exist, but do not invent a missing file. If the layout is incomplete,
-return `FAIL` with the missing paths and stop before making speculative edits.
+The exact solution language and optional data files may vary. Repair missing
+build-support files when their contents can be derived from the existing task:
+
+- Create a factual author/reviewer `README.md` from the task metadata, data
+  provenance, dependencies, and observed workflow. Do not put reviewer notes in
+  `instruction.md`, and do not fill the README with generic TODOs or invented
+  scientific claims.
+- If `tests/test.sh` and the verifier modules exist, create a complete
+  `tests/Dockerfile` from their actual imports and referenced files. It must be a
+  real verifier image, not an empty placeholder: use `FROM
+  --platform=linux/amd64`, define canonical variables, copy the existing test
+  entrypoint/modules/data, and pre-install dependencies from an approved local
+  wheelhouse or base image.
+- Create required `environment/data/` or `tests/data/` directories. Use a
+  `.gitkeep` only for an intentionally empty directory; copy actual referenced
+  fixtures when the verifier needs them. Never fabricate reference data.
+- Set the executable bit on existing `solution/solve.sh`, `tests/test.sh`, and
+  other existing task entrypoint shell scripts when required. Do not rewrite
+  their contents.
+
+If a required scientific input, solution/verifier implementation, or dependency
+cannot be derived or supplied from approved local resources, return `FAIL` with
+the exact missing path and remedy instead of inventing it.
 
 ## Workflow
 
@@ -89,8 +113,11 @@ return `FAIL` with the missing paths and stop before making speculative edits.
    Edit `task.toml` only as needed to make it valid and Oracle-compatible:
 
    - set `allow_internet = false` and preserve the task's scientific contract;
-   - keep `environment_mode` consistent with the Dockerfiles that actually
-     exist, using separate verifier mode only when its image is complete;
+   - when `tests/test.sh` and verifier modules exist, prefer
+     `environment_mode = "separate"` and complete `tests/Dockerfile`; do not
+     select shared mode merely to avoid repairing a missing verifier image;
+   - preserve an explicitly required shared mode only when the task contract
+     and project validator support it;
    - declare the files the existing solution produces and the verifier consumes
      in Harbor's supported artifact form, normally
      `artifacts = ["/workspace/output/<file>"]`;
@@ -118,10 +145,19 @@ return `FAIL` with the missing paths and stop before making speculative edits.
      `LOG_DIR=/logs/verifier` where the existing task contract needs them;
    - create required directories and give the configured runtime user access to
      them in the final image;
-   - install dependencies discovered from the read-only solution/verifier audit
-     in the appropriate Dockerfile or an approved local wheelhouse. Do not add
-     `pip install`, `apt-get`, or other downloads to `tests/test.sh` or runtime
-     execution;
+   - make every `FROM` line explicit: `FROM --platform=linux/amd64 ...`;
+   - classify every package install as Oracle/runtime, verifier, or
+     agent-bootstrap-only. Remove bootstrap-only `apt-get` blocks when they are
+     not needed by the Oracle; do not retain online `curl`, apt, or package
+     setup merely for future agent installation;
+   - repair required dependencies without network access when possible: use an
+     approved local base image, a task-local wheelhouse with
+     `pip install --no-index --find-links=...`, or an approved local `.deb`
+     bundle installed with `dpkg`. Copy only the needed bundle into the build
+     context and remove caches afterward. Do not add `pip install`, `apt-get`,
+     or other downloads to `tests/test.sh` or runtime execution;
+   - if no approved base or local package bundle can satisfy a required import
+     or CLI, leave the task policy unchanged and report the dependency blocker;
    - copy every existing runtime input under `environment/data/` into the image,
      and explicitly copy verifier files and verifier data in separate mode;
    - use `bash /solution/solve.sh` when an executable bit cannot be relied on,
@@ -142,7 +178,27 @@ return `FAIL` with the missing paths and stop before making speculative edits.
    unrelated repository content. If a referenced input is unavailable, report
    its exact expected path instead of fabricating it.
 
-5. **Check Oracle prerequisites without running the task.**
+5. **Repair strict scaffold prerequisites.**
+
+   Locate the project root and run its static validator when available, for
+   example `python3 scripts/validate_scaffold.py --root <project-root>
+   --strict`. Fix every in-scope error before treating the task as blocked:
+
+   - create a factual `task/README.md` when the scaffold requires it;
+   - create or repair `tests/Dockerfile` and `tests/data/` from existing
+     verifier files and referenced fixtures;
+   - set executable bits on existing solution/verifier shell entrypoints;
+   - add `FROM --platform=linux/amd64` to every Dockerfile stage and correct
+     context-relative `COPY` paths;
+   - remove networked dependency setup when it is replaceable by an approved
+     local base or dependency bundle.
+
+   Run the strict validator again after these repairs. A missing implementation,
+   missing scientific input, unavailable approved dependency, or error that
+   would require changing instruction/solution/test contents remains a blocker.
+   Do not create empty files merely to silence a validator.
+
+6. **Check Oracle prerequisites without running the task.**
 
    Validate the TOML, required file set, Dockerfile context paths, `COPY` targets,
    environment-variable wiring, entrypoints, user permissions, artifact paths,
@@ -153,6 +209,15 @@ return `FAIL` with the missing paths and stop before making speculative edits.
    docker build --platform linux/amd64 -t <temporary-runtime-tag> environment
    docker build --platform linux/amd64 -t <temporary-verifier-tag> tests
    ```
+
+   Before declaring the image checks impossible, inspect `docker context show`,
+   `docker context ls`, `docker info`, and `DOCKER_HOST`. If another already
+   configured client-approved context is reachable, use it explicitly with
+   `docker --context <name> ...`. Do not chmod a Docker socket, expose the
+   socket to the task, use an unapproved remote daemon, or weaken the task
+   policy. If no approved daemon is reachable, continue all static repairs and
+   report the exact access error; mark the architecture and image-size checks
+   `UNVERIFIED` rather than claiming the task or Dockerfile is at fault.
 
    Build the verifier image only when separate mode is configured. Inspect each
    resulting image with `docker image inspect --format '{{.Size}}'` and fail the
@@ -168,11 +233,14 @@ return `FAIL` with the missing paths and stop before making speculative edits.
 
 ## Failure handling
 
-Return `FAIL` when a required file is missing, metadata is invalid, a Docker
-build context or path is broken, a required dependency cannot be supplied
-offline, a network dependency remains, an image is not `linux/amd64`, an image
-exceeds 2 GB, or a mismatch can only be fixed by editing the instruction,
-solution, or tests. Include the exact file and a concise remedy for the author.
+Return `FAIL` only after attempting the in-scope repairs. Fail when a required
+implementation or scientific input is missing, metadata remains invalid, a
+Docker build context or path remains broken, a required dependency cannot be
+supplied offline, a network dependency remains, an image is not `linux/amd64`,
+an image exceeds 2 GB, or a mismatch can only be fixed by editing instruction,
+solution, or verifier content. Include the exact file and a concise remedy for
+the author. A denied Docker socket is an external validation blocker: continue
+static repairs and mark image architecture/size evidence `UNVERIFIED`.
 
 Return `PASS` only when all in-scope repairs are complete and the Oracle
 prerequisites were verified. A PASS means “ready to attempt the Oracle,” not
@@ -193,12 +261,21 @@ files changed, checks run, and remaining blockers. When run through
 - Never edit `instruction.md`, any file under `solution/`, or any verifier/test
   implementation. This includes `solve.py`, `solve.sh`, `tests/test.sh`, test
   Python files, thresholds, fixtures, and expected outputs.
+- File mode changes on existing required shell entrypoints are allowed; never
+  change their contents. Adding reviewer `README.md`, Dockerfiles, data
+  directories, `.gitkeep`, and approved vendored dependency files is allowed
+  only when the contents are derived from the task and genuinely required.
 - Never alter the scientific problem, output schema, tolerances, or verifier
   assertions to manufacture Oracle success.
-- Never create placeholder files that merely satisfy a required-file check.
-- Keep all edits inside the one target task and limited to metadata, Docker/build
-  configuration, and required local input data.
+- Never create placeholder solution/test implementations or fake scientific
+  data merely to satisfy a required-file check.
+- Keep all edits inside the one target task and limited to metadata, reviewer
+  notes, Docker/build configuration, file modes, and required local input or
+  dependency data.
 - Do not introduce network access, secrets, hidden answer data, task-local agent
   skills, caches, or unrelated files.
+- Do not leave online apt, pip, curl, or package bootstrap commands when an
+  approved offline base or local bundle can replace them; never enable internet
+  access to make a build pass.
 - Clean up every temporary container and image created during validation.
 - Cite every changed path and every unverified check in the final handoff.

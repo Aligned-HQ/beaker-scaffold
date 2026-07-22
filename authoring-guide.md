@@ -234,10 +234,15 @@ survey the entire task and correct only task-local reproducibility and
 reviewability issues:
 
 - missing required layout files;
+- missing reviewer README, verifier Dockerfile, or required data directories
+  when they can be derived from the existing task;
 - hardcoded workstation or staging paths;
 - data not copied into the final runtime stage;
 - wrong Docker build-context prefixes;
 - missing runtime or verifier dependencies;
+- online dependency installs that can be replaced with an approved offline base
+  image or local wheel/package bundle;
+- non-executable existing solution/verifier shell entrypoints;
 - missing configured users or output permissions;
 - artifact declarations that do not match produced files;
 - missing `solution/process.md`;
