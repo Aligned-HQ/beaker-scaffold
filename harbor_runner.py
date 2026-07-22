@@ -11,8 +11,10 @@ single job for easy pass@k aggregation.
 
 Modal is the default backend. Preflight requires explicit
 `FROM --platform=linux/amd64` declarations in task Dockerfiles and rejects
-prebuilt image manifests that are not a single Linux/amd64 image. It also
-requires `[environment].allow_internet = false` for the client task policy.
+prebuilt image manifests that are not a single Linux/amd64 image. The source
+task must declare `[environment].allow_internet = false`; normal runs create
+an offline Oracle snapshot and a separate agent snapshot with
+`allow_internet = true`.
 
 Examples:
     # Build the task image and run the reference solution/verifier locally:
@@ -115,6 +117,8 @@ REMOTE_ACTIVE_STATES = {
 }
 REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
 REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
+REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
+REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
 REMOTE_AGENT_CONFIGS = {
     ("claude-code", "anthropic/claude-opus-4-7"): "claude-opus",
     ("codex", "openai/gpt-5.5"): "codex-gpt-5-5",
@@ -239,6 +243,7 @@ class OracleSortJobSpec:
     runner_log: Path
     resume: bool
     completion_grace_sec: float
+    progress_interval_sec: float
 
 
 @dataclass(frozen=True)
@@ -289,10 +294,55 @@ def resolve_single_task(path: Path) -> Path:
     return path
 
 
-def snapshot_task_root(task_root: Path, jobs_dir: Path, run_id: str) -> Path:
+def set_snapshot_allow_internet(task_root: Path, allow_internet: bool) -> None:
+    """Set the generated snapshot's network policy without touching the source task."""
+    config_path = task_root / "task.toml"
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    in_environment = False
+    replaced = False
+    for index, line in enumerate(lines):
+        section = re.match(r"^\s*\[([^\[].*?)\]\s*(?:#.*)?(?:\r?\n)?$", line)
+        if section:
+            in_environment = section.group(1).strip() == "environment"
+            continue
+        if not in_environment:
+            continue
+        if re.match(r"^\s*allow_internet\s*=", line):
+            newline = "\n" if line.endswith("\n") else ""
+            comment = ""
+            content = line.rstrip("\r\n")
+            if "#" in content:
+                comment_text = content.split("#", 1)[1].strip()
+                comment = f"  # {comment_text}" if comment_text else "  #"
+            lines[index] = f"allow_internet = {str(allow_internet).lower()}{comment}{newline}"
+            replaced = True
+            break
+    if not replaced:
+        raise SystemExit(
+            f"error: {config_path} must contain [environment].allow_internet "
+            "so the runner can create the Oracle and agent snapshots"
+        )
+    config_path.write_text("".join(lines), encoding="utf-8")
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    environment = parsed.get("environment")
+    if not isinstance(environment, dict) or environment.get("allow_internet") is not allow_internet:
+        raise SystemExit(
+            f"error: failed to set [environment].allow_internet={str(allow_internet).lower()} "
+            f"in generated snapshot {config_path}"
+        )
+
+
+def snapshot_task_root(
+    task_root: Path,
+    jobs_dir: Path,
+    run_id: str,
+    snapshot_label: str = "task-snapshot",
+    *,
+    allow_internet: bool | None = None,
+) -> Path:
     """Create an immutable copy of the single task for this Harbor run."""
 
-    snapshot_root = jobs_dir.resolve() / f"{run_id}.task-snapshot"
+    snapshot_root = jobs_dir.resolve() / f"{run_id}.{snapshot_label}"
     if snapshot_root.exists():
         shutil.rmtree(snapshot_root)
     ignore = shutil.ignore_patterns(
@@ -302,6 +352,8 @@ def snapshot_task_root(task_root: Path, jobs_dir: Path, run_id: str) -> Path:
         ".runner-logs",
     )
     shutil.copytree(task_root, snapshot_root, symlinks=True, ignore=ignore)
+    if allow_internet is not None:
+        set_snapshot_allow_internet(snapshot_root, allow_internet)
     stable_time = time.time() - 60.0
     for path in snapshot_root.rglob("*"):
         if not path.is_symlink():
@@ -565,33 +617,158 @@ def remote_retry_after(headers: dict[str, str], fallback: float) -> float:
     return max(0.0, min(value, 60.0))
 
 
-def print_remote_progress(status: dict[str, object], previous: tuple[object, ...] | None) -> tuple[object, ...]:
+REMOTE_STATE_MESSAGES = {
+    "CREATED": "run record created",
+    "UPLOADING": "waiting for the task bundle upload",
+    "VALIDATING": "Workbench is validating the task bundle and execution policy",
+    "QUEUED": "queued; waiting for a Harbor worker",
+    "ORACLE_RUNNING": "Oracle is running; agent jobs wait for a passing Oracle result",
+    "ORACLE_FAILED": "Oracle did not meet the pass threshold; agent jobs were not started",
+    "ORACLE_EXCEPTION": "Oracle finished with an exception",
+    "AGENTS_QUEUED": "Oracle passed; agent jobs are queued",
+    "AGENTS_RUNNING": "agent jobs are running; Workbench will publish trial counts as the executor reports them",
+    "FINALIZING": "execution results are being collected and the trajectory archive is being built",
+    "COMPLETE": "all requested execution work is complete",
+    "CANCELED": "run cancellation was requested",
+    "EXPIRED": "the worker lease expired; cleanup was attempted",
+    "ERROR": "the service recorded an execution error",
+}
+
+
+def format_elapsed(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, remainder = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m {remainder:02d}s"
+
+
+def remote_count(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def remote_progress_signature(status: dict[str, object]) -> tuple[object, ...]:
     state = status.get("state")
     agents = status.get("agents") if isinstance(status.get("agents"), list) else []
     signature_parts: list[object] = [state]
-    details: list[str] = []
     for agent in agents:
         if not isinstance(agent, dict):
             continue
-        signature = (
+        signature_parts.extend((
             agent.get("id"),
             agent.get("state"),
             agent.get("finished_trials"),
             agent.get("pass_count"),
             agent.get("fail_count"),
             agent.get("exception_count"),
+        ))
+    oracle = status.get("oracle") if isinstance(status.get("oracle"), dict) else {}
+    exception = oracle.get("exception") if isinstance(oracle.get("exception"), dict) else {}
+    error = status.get("error") if isinstance(status.get("error"), dict) else {}
+    signature_parts.extend((
+        oracle.get("state"),
+        oracle.get("reward"),
+        exception.get("type"),
+        status.get("terminal_reason"),
+        error.get("type"),
+        error.get("message"),
+    ))
+    return tuple(signature_parts)
+
+
+def print_remote_progress(
+    status: dict[str, object],
+    previous: tuple[object, ...] | None,
+    *,
+    elapsed_sec: float = 0.0,
+    force: bool = False,
+) -> tuple[object, ...]:
+    state = status.get("state")
+    signature = remote_progress_signature(status)
+    changed = signature != previous
+    if changed or force:
+        label = "remote state" if changed else "remote heartbeat"
+        message = REMOTE_STATE_MESSAGES.get(str(state), "waiting for the service to report progress")
+        print(
+            f"{label}: {state} | {message} | elapsed {format_elapsed(elapsed_sec)}",
+            flush=True,
         )
-        signature_parts.extend(signature)
-        details.append(
-            f"{agent.get('id')}: {agent.get('finished_trials', 0)}/{agent.get('expected_trials', 0)} "
-            f"finished, {agent.get('pass_count', 0)} pass, {agent.get('fail_count', 0)} fail, "
-            f"{agent.get('exception_count', 0)} exception"
-        )
-    signature = tuple(signature_parts)
-    if signature != previous:
-        print(f"remote state: {state}", flush=True)
-        for detail in details:
-            print(f"  {detail}", flush=True)
+        updated_at = status.get("updated_at")
+        if updated_at:
+            print(f"  server updated: {updated_at}", flush=True)
+
+        oracle = status.get("oracle") if isinstance(status.get("oracle"), dict) else {}
+        oracle_state = oracle.get("state", "INCOMPLETE")
+        oracle_reward = oracle.get("reward")
+        oracle_text = f"oracle: {oracle_state}"
+        if oracle_reward is not None:
+            oracle_text += f" reward={oracle_reward}"
+        oracle_job_id = oracle.get("job_id")
+        if oracle_job_id:
+            oracle_text += f" job={oracle_job_id}"
+        oracle_exception = oracle.get("exception")
+        if isinstance(oracle_exception, dict) and oracle_exception.get("type"):
+            oracle_text += f" exception={oracle_exception.get('type')}"
+        print(f"  {oracle_text}", flush=True)
+
+        agents = status.get("agents") if isinstance(status.get("agents"), list) else []
+        total_expected = 0
+        total_finished = 0
+        total_passed = 0
+        total_failed = 0
+        total_exceptions = 0
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            expected = remote_count(agent.get("expected_trials"))
+            finished = remote_count(agent.get("finished_trials"))
+            passed = remote_count(agent.get("pass_count"))
+            failed = remote_count(agent.get("fail_count"))
+            exceptions = remote_count(agent.get("exception_count"))
+            total_expected += expected
+            total_finished += finished
+            total_passed += passed
+            total_failed += failed
+            total_exceptions += exceptions
+            job_id = agent.get("job_id")
+            job_suffix = f" job={job_id}" if job_id else ""
+            agent_meta = ""
+            if agent.get("agent") or agent.get("model"):
+                agent_meta = f" [{agent.get('agent', '?')} / {agent.get('model', '?')}]"
+            print(
+                f"  agent {agent.get('id', 'unknown')}{agent_meta}: "
+                f"{agent.get('state', 'UNKNOWN')} "
+                f"{finished}/{expected} trials, {passed} pass, {failed} fail, "
+                f"{exceptions} exception{job_suffix}",
+                flush=True,
+            )
+        if agents:
+            print(
+                f"  totals: {total_finished}/{total_expected} trials finished, "
+                f"{total_passed} pass, {total_failed} fail, {total_exceptions} exception",
+                flush=True,
+            )
+
+        terminal_reason = status.get("terminal_reason")
+        if terminal_reason:
+            print(f"  terminal reason: {terminal_reason}", flush=True)
+        error = status.get("error")
+        if isinstance(error, dict) and (error.get("type") or error.get("message")):
+            detail = error.get("message") or error.get("type")
+            print(f"  service error: {detail}", flush=True)
+        validation_errors = status.get("validation_errors")
+        if isinstance(validation_errors, list) and validation_errors:
+            print("  validation errors:", flush=True)
+            for validation_error in validation_errors:
+                print(f"    - {validation_error}", flush=True)
     return signature
 
 
@@ -602,12 +779,16 @@ def poll_remote_status(
     *,
     minimum_delay: float,
     maximum_delay: float,
+    progress_interval: float,
     state_path: Path,
     state: dict[str, object],
 ) -> dict[str, object]:
     etag: str | None = None
     previous_signature: tuple[object, ...] | None = None
     delay = max(0.25, minimum_delay)
+    started = time.monotonic()
+    last_announcement = 0.0
+    last_status: dict[str, object] | None = None
     while True:
         headers = {"If-None-Match": etag} if etag else {}
         try:
@@ -617,17 +798,45 @@ def poll_remote_status(
         except RemoteClientError as error:
             if error.status in {429, 500, 502, 503, 504}:
                 wait = remote_retry_after(error.headers, delay)
-                print(f"remote poll temporarily unavailable; retrying in {wait:g}s", flush=True)
+                print(
+                    f"remote poll temporarily unavailable; retrying in {wait:g}s "
+                    f"(elapsed {format_elapsed(time.monotonic() - started)})",
+                    flush=True,
+                )
                 time.sleep(wait)
                 delay = min(maximum_delay, max(minimum_delay, delay * 2))
                 continue
             raise
         if http_status == 304:
+            now = time.monotonic()
+            if last_status is not None and now - last_announcement >= progress_interval:
+                previous_signature = print_remote_progress(
+                    last_status,
+                    previous_signature,
+                    elapsed_sec=now - started,
+                    force=True,
+                )
+                last_announcement = now
             time.sleep(remote_retry_after(response_headers, delay))
             delay = min(maximum_delay, max(minimum_delay, delay * 2))
             continue
         etag = response_headers.get("etag", etag)
-        previous_signature = print_remote_progress(status, previous_signature)
+        last_status = status
+        now = time.monotonic()
+        signature = remote_progress_signature(status)
+        should_announce = (
+            previous_signature is None
+            or signature != previous_signature
+            or now - last_announcement >= progress_interval
+        )
+        previous_signature = print_remote_progress(
+            status,
+            previous_signature,
+            elapsed_sec=now - started,
+            force=should_announce,
+        )
+        if should_announce:
+            last_announcement = now
         state.update({"run_id": run_id, "last_status": status.get("state"), "last_status_response": status})
         save_remote_state(state_path, state)
         if status.get("state") in REMOTE_TERMINAL_STATES:
@@ -754,6 +963,7 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
     if remote_local_archive_ready(base_dir.resolve(), run_id, sha256):
         print(f"trajectory archive: already verified at {destination}", flush=True)
         return destination
+    print(f"trajectory archive: downloading {size_bytes} bytes", flush=True)
     try:
         with urllib.request.urlopen(urllib.request.Request(download_url, method="GET"), timeout=120.0) as response:
             content_length = response.headers.get("Content-Length")
@@ -765,6 +975,7 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
                     raise RemoteClientError(0, "archive_download", "The trajectory archive returned an invalid size.") from None
             chunks: list[bytes] = []
             total = 0
+            next_progress = min(REMOTE_ARCHIVE_PROGRESS_BYTES, size_bytes)
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -773,6 +984,13 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
                 if total > REMOTE_MAX_ARCHIVE_BYTES:
                     raise RemoteClientError(0, "archive_too_large", "The trajectory archive exceeds the client size limit.")
                 chunks.append(chunk)
+                if total >= next_progress:
+                    percent = 100.0 * total / size_bytes
+                    print(
+                        f"trajectory archive: downloaded {total}/{size_bytes} bytes ({percent:.1f}%)",
+                        flush=True,
+                    )
+                    next_progress = min(size_bytes, next_progress + REMOTE_ARCHIVE_PROGRESS_BYTES)
             archive_bytes = b"".join(chunks)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
         raise RemoteClientError(0, "archive_download", "The trajectory archive download failed.") from error
@@ -804,6 +1022,46 @@ def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> i
     return 5
 
 
+def print_remote_results(results: dict[str, object]) -> None:
+    oracle = results.get("oracle") if isinstance(results.get("oracle"), dict) else {}
+    oracle_text = f"oracle: {oracle.get('verdict', 'INCOMPLETE')}"
+    if oracle.get("reward") is not None:
+        oracle_text += f" reward={oracle.get('reward')}"
+    oracle_exception = oracle.get("exception")
+    if isinstance(oracle_exception, dict) and oracle_exception.get("type"):
+        oracle_text += f" exception={oracle_exception.get('type')}"
+    print(f"remote results: {oracle_text}", flush=True)
+
+    summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+    finished = remote_count(summary.get("agent_trials_finished"))
+    expected = remote_count(summary.get("agent_trials_expected"))
+    print(
+        f"  agent trials: {finished}/{expected} finished, "
+        f"{remote_count(summary.get('pass_count'))} pass, "
+        f"{remote_count(summary.get('fail_count'))} fail, "
+        f"{remote_count(summary.get('exception_count'))} exception",
+        flush=True,
+    )
+
+    trials = results.get("trials") if isinstance(results.get("trials"), list) else []
+    by_agent: dict[str, dict[str, int]] = {}
+    for trial in trials:
+        if not isinstance(trial, dict):
+            continue
+        agent_id = str(trial.get("agent_id") or "unknown")
+        counts = by_agent.setdefault(agent_id, {"PASS": 0, "FAIL": 0, "EXCEPTION": 0, "INCOMPLETE": 0})
+        verdict = str(trial.get("verdict") or "INCOMPLETE")
+        counts[verdict] = counts.get(verdict, 0) + 1
+    for agent_id, counts in by_agent.items():
+        print(
+            f"  {agent_id}: {counts.get('PASS', 0)} pass, "
+            f"{counts.get('FAIL', 0)} fail, "
+            f"{counts.get('EXCEPTION', 0)} exception, "
+            f"{counts.get('INCOMPLETE', 0)} incomplete",
+            flush=True,
+        )
+
+
 def run_remote(task_root: Path, args: argparse.Namespace) -> int:
     base: str | None = None
     token = ""
@@ -830,6 +1088,8 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             raise RemoteInputError("provide --workbench-token or WORKBENCH_RUNNER_TOKEN for remote mode")
         if args.remote_poll_min <= 0 or args.remote_poll_max <= 0 or args.remote_poll_max < args.remote_poll_min:
             raise RemoteInputError("remote poll intervals must be positive, with --remote-poll-max >= --remote-poll-min")
+        if args.remote_progress_interval_sec <= 0:
+            raise RemoteInputError("--remote-progress-interval-sec must be positive")
         base = remote_service_base(args.service_url)
         agents = remote_agent_payload(args)
         jobs_dir = args.jobs_dir.resolve()
@@ -842,7 +1102,13 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         if run_id is None and local_id.startswith("hr_"):
             run_id = local_id
         if run_id is None:
+            print(f"remote submit: packaging task {task_root.resolve()}", flush=True)
             archive, bundle_sha256, bundle_size = build_remote_task_bundle(task_root)
+            print(
+                f"remote submit: bundle ready ({bundle_size} bytes, {bundle_sha256}); "
+                f"requesting {len(agents)} agent job(s) x {args.repeats} attempt(s)",
+                flush=True,
+            )
             idempotency_key = state.get("idempotency_key") if isinstance(state.get("idempotency_key"), str) else f"harbor-runner:{uuid4().hex}"
             client_request_id = state.get("client_request_id") if isinstance(state.get("client_request_id"), str) else f"remote-{slug(task_root.name)}-{slug(local_id)}"
             payload = {
@@ -888,11 +1154,17 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             }
             save_remote_state(request_path, state)
             save_remote_state(service_run_path, state)
+            print(
+                f"remote submit: Workbench created {run_id} "
+                f"({created.get('state', 'UPLOADING')}); uploading task bundle",
+                flush=True,
+            )
             upload = created.get("upload")
             if isinstance(upload, dict) and isinstance(upload.get("url"), str):
                 upload_headers = upload.get("headers") if isinstance(upload.get("headers"), dict) else {}
                 remote_upload(str(upload["url"]), archive, {str(k): str(v) for k, v in upload_headers.items()})
                 print(f"remote upload: {bundle_size} bytes verified locally ({bundle_sha256})", flush=True)
+            print(f"remote start: enqueueing {run_id}", flush=True)
             try:
                 _, started, _ = remote_json_request(
                     "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
@@ -910,6 +1182,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 raise RemoteInputError("the saved remote run belongs to a different --service-url")
             _, resume_status, _ = remote_json_request(
                 "GET", remote_url(base, f"/v1/harbor/runs/{run_id}"), token
+            )
+            print(
+                f"remote resume: {run_id} is {resume_status.get('state', 'UNKNOWN')}; "
+                "checking whether upload or execution needs to continue",
+                flush=True,
             )
             if resume_status.get("state") in {"CREATED", "UPLOADING"}:
                 request_payload = state.get("request_payload")
@@ -963,20 +1240,34 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
 
         assert isinstance(run_id, str)
         service_run_path = service_run_path or remote_state_path(jobs_dir, run_id)
+        print(
+            f"remote monitor: polling {run_id}; progress messages every "
+            f"{args.remote_progress_interval_sec:g}s (Ctrl-C leaves the server run running by default)",
+            flush=True,
+        )
         status = poll_remote_status(
             base,
             run_id,
             token,
             minimum_delay=max(0.25, args.remote_poll_min),
             maximum_delay=max(args.remote_poll_min, args.remote_poll_max),
+            progress_interval=args.remote_progress_interval_sec,
             state_path=service_run_path,
             state=state,
         )
+        print(
+            f"remote monitor: terminal state {status.get('state')} "
+            f"({status.get('terminal_reason') or 'no terminal reason'})",
+            flush=True,
+        )
+        print("remote results: fetching Oracle and agent verdicts", flush=True)
         _, results, _ = remote_json_request(
             "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/results"), token
         )
+        print_remote_results(results)
         manifest: dict[str, object] | None = None
-        for _ in range(20):
+        print("remote archive: waiting for the trajectory manifest", flush=True)
+        for attempt in range(20):
             try:
                 _, manifest_value, _ = remote_json_request(
                     "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/trajectories"), token
@@ -986,9 +1277,20 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             except RemoteClientError as error:
                 if error.status != 409:
                     raise
+                if attempt == 0 or (attempt + 1) % 5 == 0:
+                    print(
+                        f"remote archive: still finalizing; retrying manifest "
+                        f"({attempt + 1}/20)",
+                        flush=True,
+                    )
                 time.sleep(1.0)
         if manifest is None:
             raise RemoteClientError(409, "trajectory_not_ready", "The service did not publish a trajectory archive.")
+        print(
+            f"remote archive: manifest ready ({manifest.get('size_bytes', '?')} bytes, "
+            f"{manifest.get('entry_count', '?')} entries); downloading",
+            flush=True,
+        )
         archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
         state.update({
             "run_id": run_id,
@@ -1001,6 +1303,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         save_remote_state(service_run_path, state)
         if request_path != service_run_path:
             save_remote_state(request_path, state)
+        print(f"remote complete: trajectory archive available at {archive_destination}", flush=True)
         return remote_exit_code(status, results)
     except KeyboardInterrupt:
         if getattr(args, "cancel_on_interrupt", False) and isinstance(run_id, str) and base:
@@ -1568,8 +1871,13 @@ def validate_prebuilt_image(image: str) -> list[str]:
     return []
 
 
-def validate_modal_task_policy(tasks: list[Path], backend: str) -> None:
-    """Validate the client network and Modal image contract before execution."""
+def validate_modal_task_policy(
+    tasks: list[Path],
+    backend: str,
+    *,
+    expected_allow_internet: bool = False,
+) -> None:
+    """Validate the network and Modal image contract for a task snapshot."""
     if backend != "modal":
         raise SystemExit(
             "error: harbor_runner.py is intentionally Modal-only; "
@@ -1584,10 +1892,12 @@ def validate_modal_task_policy(tasks: list[Path], backend: str) -> None:
         if not isinstance(environment, dict):
             errors.append(f"{config_path}: missing [environment] table")
             continue
-        if environment.get("allow_internet") is not False:
+        if environment.get("allow_internet") is not expected_allow_internet:
+            expected = str(expected_allow_internet).lower()
+            policy = "agent execution policy" if expected_allow_internet else "Oracle offline policy"
             errors.append(
-                f"{config_path}: [environment].allow_internet must be false "
-                "for the client offline policy"
+                f"{config_path}: [environment].allow_internet must be {expected} "
+                f"for the {policy}"
             )
 
         environment_dir = task / "environment"
@@ -1794,6 +2104,7 @@ def build_oracle_sort_job_spec(
         runner_log=jobs_dir / f"{job_name}.runner.log",
         resume=args.resume,
         completion_grace_sec=args.completion_grace_sec,
+        progress_interval_sec=args.progress_interval_sec,
     )
 
 
@@ -1932,6 +2243,14 @@ def run_job(
             text=True,
             env=env,
         )
+        start_line = (
+            f"agent job started: {spec.label} ({spec.agent}, {spec.model}); "
+            f"expecting {expected_trials} trial(s)"
+        )
+        if progress_reporter is None:
+            print(start_line, flush=True)
+        else:
+            progress_reporter.report(spec, start_line)
         with PROCESS_LOCK:
             RUNNING_PROCESSES[spec.job_name] = process
         try:
@@ -1950,7 +2269,10 @@ def run_job(
                             expected_trials,
                             spec.repeats,
                         )
-                        line = format_job_progress(spec, progress)
+                        line = (
+                            f"{format_job_progress(spec, progress)}, "
+                            f"elapsed {format_elapsed(now - started)}"
+                        )
                         if progress_reporter is None:
                             print(line, flush=True)
                             print("=============", flush=True)
@@ -2029,6 +2351,8 @@ def run_oracle_sort_job(
     mode = "a" if spec.resume else "w"
     returncode = 2
     completed_since: float | None = None
+    started = time.time()
+    next_progress_at = started
     with spec.runner_log.open(mode, encoding="utf-8") as log:
         log.write(f"\n$ {redacted_command(spec.command)}\n\n")
         log.flush()
@@ -2040,6 +2364,10 @@ def run_oracle_sort_job(
             text=True,
             env=env,
         )
+        print(
+            f"Oracle job started: {spec.job_name}; expecting {spec.num_tasks} result(s)",
+            flush=True,
+        )
         with PROCESS_LOCK:
             RUNNING_PROCESSES[spec.job_name] = process
         try:
@@ -2048,12 +2376,22 @@ def run_oracle_sort_job(
                     returncode = process.wait(timeout=5)
                     break
                 except subprocess.TimeoutExpired:
+                    now = time.time()
                     if on_poll is not None:
                         try:
                             on_poll()
                         except Exception as exc:
                             log.write(f"incremental sort hook failed: {exc!r}\n")
                             log.flush()
+                    if (
+                        spec.progress_interval_sec > 0
+                        and now >= next_progress_at
+                    ):
+                        line = format_oracle_progress(spec, started)
+                        print(line, flush=True)
+                        log.write(line + "\n")
+                        log.flush()
+                        next_progress_at = now + spec.progress_interval_sec
                     completed = completed_trial_result_count(
                         spec.job_dir, spec.num_tasks
                     )
@@ -2099,6 +2437,35 @@ def run_oracle_sort_job(
             with PROCESS_LOCK:
                 RUNNING_PROCESSES.pop(spec.job_name, None)
     return returncode
+
+
+def format_oracle_progress(spec: OracleSortJobSpec, started_at: float) -> str:
+    result_paths = sorted(spec.job_dir.glob("*/result.json"))
+    finished = 0
+    passed = 0
+    exceptions = 0
+    for result_path in result_paths:
+        try:
+            result = load_json(result_path)
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            continue
+        if not result.get("finished_at"):
+            continue
+        finished += 1
+        reward = trial_reward(result)
+        if reward is not None and reward > 0:
+            passed += 1
+        if exception_type(result) is not None:
+            exceptions += 1
+    failed = max(0, finished - passed)
+    expected = spec.num_tasks
+    percent = 100.0 * finished / expected if expected else 100.0
+    return (
+        f"Oracle progress: {finished}/{expected} result(s) finished "
+        f"({percent:.1f}%), result files {len(result_paths)}, "
+        f"rewarded {passed}, not rewarded {failed}, exceptions {exceptions}, "
+        f"elapsed {format_elapsed(time.time() - started_at)}"
+    )
 
 
 def job_result_from_spec(spec: JobSpec, returncode: int, elapsed_sec: float = 0.0) -> JobResult:
@@ -3068,6 +3435,15 @@ def main(argv: list[str]) -> int:
         help="Maximum remote status poll delay in seconds (default: 30).",
     )
     parser.add_argument(
+        "--remote-progress-interval-sec",
+        type=float,
+        default=REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS,
+        help=(
+            "Print a remote heartbeat at least this often while the service "
+            "has not changed state (default: 30)."
+        ),
+    )
+    parser.add_argument(
         "--jobs-dir",
         type=Path,
         default=Path("harbor-jobs"),
@@ -3115,8 +3491,9 @@ def main(argv: list[str]) -> int:
         type=float,
         default=60.0,
         help=(
-            "While agent jobs are running, print completed 3x trial counts and "
-            "pass/fail stats at this interval; set <= 0 to disable (default: 60)."
+            "While local Oracle and agent jobs are running, print completed "
+            "trial counts and pass/fail stats at this interval; set <= 0 to "
+            "disable local progress (default: 60)."
         ),
     )
     parser.add_argument(
@@ -3326,8 +3703,9 @@ def main(argv: list[str]) -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Copy the task into JOBS_DIR/RUN_ID.task-snapshot before invoking Harbor so "
-            "the run sees an immutable copy (default: enabled)."
+            "Create separate immutable Oracle and agent snapshots before invoking "
+            "Harbor; the Oracle snapshot is offline and the agent snapshot allows "
+            "internet (default: enabled)."
         ),
     )
     args = parser.parse_args(argv)
@@ -3384,6 +3762,12 @@ def main(argv: list[str]) -> int:
             )
         return run_local_smoke(task_root, args)
 
+    if not args.task_snapshot and not args.dry_run and not args.resume and not args.archive_only:
+        raise SystemExit(
+            "error: --no-task-snapshot is not supported for Harbor execution; "
+            "the Oracle and agent jobs require separate immutable snapshots"
+        )
+
     require_executable("harbor")
 
     num_tasks = 1
@@ -3400,22 +3784,54 @@ def main(argv: list[str]) -> int:
     MODAL_APP_NAME = modal_app_name
     merge_modal_secret_kwargs(args)
     merge_modal_run_kwargs(args)
-    task_root_for_harbor = task_root
-    snapshot_root: Path | None = None
+    oracle_task_root = task_root
+    agent_task_root = task_root
+    oracle_snapshot_root: Path | None = None
+    agent_snapshot_root: Path | None = None
 
     should_snapshot = (
         args.task_snapshot
-        and not args.dry_run
         and not args.resume
         and not args.archive_only
     )
     if should_snapshot:
         jobs_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_root = snapshot_task_root(task_root, jobs_dir, args.run_id)
-        task_root_for_harbor = snapshot_root
+        oracle_snapshot_root = jobs_dir / f"{args.run_id}.oracle-task-snapshot"
+        oracle_task_root = oracle_snapshot_root
+        if not args.oracle_sort:
+            agent_snapshot_root = jobs_dir / f"{args.run_id}.agent-task-snapshot"
+            agent_task_root = agent_snapshot_root
+        if not args.dry_run:
+            oracle_task_root = snapshot_task_root(
+                task_root,
+                jobs_dir,
+                args.run_id,
+                snapshot_label="oracle-task-snapshot",
+                allow_internet=False,
+            )
+            oracle_snapshot_root = oracle_task_root
+            validate_modal_task_policy(
+                [oracle_task_root],
+                args.env,
+                expected_allow_internet=False,
+            )
+            if not args.oracle_sort:
+                agent_task_root = snapshot_task_root(
+                    oracle_task_root,
+                    jobs_dir,
+                    args.run_id,
+                    snapshot_label="agent-task-snapshot",
+                    allow_internet=True,
+                )
+                agent_snapshot_root = agent_task_root
+                validate_modal_task_policy(
+                    [agent_task_root],
+                    args.env,
+                    expected_allow_internet=True,
+                )
 
     if args.oracle_sort:
-        job = build_oracle_sort_job_spec(task_root_for_harbor, num_tasks, args)
+        job = build_oracle_sort_job_spec(oracle_task_root, num_tasks, args)
         action = "archive-only" if args.archive_only else ("resume" if args.resume else "run")
         print(f"run-id:      {args.run_id}")
         print(f"action:      oracle-sort {action}")
@@ -3423,8 +3839,8 @@ def main(argv: list[str]) -> int:
         print(f"modal app:   {args.modal_app_name}")
         print(f"run manifest:{args.modal_run_manifest}")
         print(f"task root:   {task_root}")
-        if snapshot_root is not None:
-            print(f"snapshot:    {snapshot_root}")
+        if oracle_snapshot_root is not None:
+            print(f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)")
         print(f"tasks:       {num_tasks}")
         print(f"concurrency: {args.n_concurrent or args.oracle_concurrency}")
         print(f"threshold:   reward >= {args.pass_threshold}")
@@ -3512,8 +3928,8 @@ def main(argv: list[str]) -> int:
     if args.completion_grace_sec < 0:
         raise SystemExit("error: --completion-grace-sec must be >= 0")
 
-    specs = build_job_specs(task_root_for_harbor, num_tasks, agent_specs, args)
-    oracle_job = build_oracle_sort_job_spec(task_root_for_harbor, num_tasks, args)
+    specs = build_job_specs(agent_task_root, num_tasks, agent_specs, args)
+    oracle_job = build_oracle_sort_job_spec(oracle_task_root, num_tasks, args)
 
     action = "archive-only" if args.archive_only else ("resume" if args.resume else "run")
     print(f"run-id:    {args.run_id}")
@@ -3522,8 +3938,10 @@ def main(argv: list[str]) -> int:
     print(f"modal app: {args.modal_app_name}")
     print(f"manifest:  {args.modal_run_manifest}")
     print(f"task root: {task_root}")
-    if snapshot_root is not None:
-        print(f"snapshot:  {snapshot_root}")
+    if oracle_snapshot_root is not None:
+        print(f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)")
+    if agent_snapshot_root is not None:
+        print(f"agent snapshot:  {agent_snapshot_root} (allow_internet=true)")
     print(f"tasks:     {num_tasks}")
     print(f"attempts:  {args.repeats}")
     print(

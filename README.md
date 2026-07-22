@@ -95,7 +95,13 @@ machine; task environments must still run without internet access.
    The runner executes the Oracle first and starts the three agent setups only
    if the Oracle passes. The default model jobs are Claude Code, Codex, and
    Gemini CLI. Each run gets an isolated Modal App and is cleaned up on normal
-   completion or interruption.
+   completion or interruption. Local Modal runs use separate immutable task
+   snapshots: the Oracle snapshot is offline, while the agent snapshot enables
+   internet access. During a remote run it prints Workbench phase
+   changes, Oracle and per-agent trial counts, periodic heartbeats, result
+   summaries, and trajectory-download progress. Use
+   `--remote-progress-interval-sec SECONDS` to change the heartbeat interval
+   (30 seconds by default).
 
 9. Review the completed trajectory:
 

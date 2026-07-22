@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 import io
+import contextlib
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -100,6 +101,34 @@ def check_smoke_mode_wiring() -> None:
     assert "<redacted>" in rendered
 
 
+def check_network_split_snapshots() -> None:
+    task_root = Path(__file__).resolve().parents[1] / "task"
+    original_sleep = harbor_runner.time.sleep
+    harbor_runner.time.sleep = lambda _seconds: None
+    try:
+        with tempfile.TemporaryDirectory(prefix="beaker-snapshot-test-") as raw:
+            jobs_dir = Path(raw) / "jobs"
+            oracle = harbor_runner.snapshot_task_root(
+                task_root,
+                jobs_dir,
+                "snapshot-test",
+                snapshot_label="oracle-task-snapshot",
+                allow_internet=False,
+            )
+            agent = harbor_runner.snapshot_task_root(
+                oracle,
+                jobs_dir,
+                "snapshot-test",
+                snapshot_label="agent-task-snapshot",
+                allow_internet=True,
+            )
+            assert oracle != agent
+            assert harbor_runner.load_toml(oracle / "task.toml")["environment"]["allow_internet"] is False
+            assert harbor_runner.load_toml(agent / "task.toml")["environment"]["allow_internet"] is True
+    finally:
+        harbor_runner.time.sleep = original_sleep
+
+
 def check_remote_bundle_wiring() -> None:
     task_root = Path(__file__).resolve().parents[1] / "task"
     archive, digest, size = harbor_runner.build_remote_task_bundle(task_root)
@@ -129,12 +158,55 @@ def check_remote_policy_wiring() -> None:
         raise AssertionError("remote policy allowed more than 30 total trials")
 
 
+def check_remote_progress_reporting() -> None:
+    status = {
+        "state": "AGENTS_RUNNING",
+        "updated_at": "2026-07-22T12:34:56.000Z",
+        "terminal_reason": None,
+        "oracle": {"state": "PASS", "reward": 1.0, "exception": None},
+        "agents": [
+            {
+                "id": "claude-opus",
+                "state": "RUNNING",
+                "expected_trials": 9,
+                "finished_trials": 2,
+                "pass_count": 1,
+                "fail_count": 1,
+                "exception_count": 0,
+                "job_id": "hr_abc-claude-opus",
+            }
+        ],
+    }
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        signature = harbor_runner.print_remote_progress(
+            status,
+            None,
+            elapsed_sec=65,
+        )
+        same_signature = harbor_runner.print_remote_progress(
+            status,
+            signature,
+            elapsed_sec=95,
+            force=True,
+        )
+    rendered = output.getvalue()
+    assert signature == same_signature
+    assert "remote state: AGENTS_RUNNING" in rendered
+    assert "remote heartbeat: AGENTS_RUNNING" in rendered
+    assert "server updated: 2026-07-22T12:34:56.000Z" in rendered
+    assert "agent claude-opus: RUNNING 2/9 trials" in rendered
+    assert "totals: 2/9 trials finished, 1 pass, 1 fail, 0 exception" in rendered
+
+
 if __name__ == "__main__":
     check_run_identity()
     check_names_are_valid_and_unique()
     check_cleanup_is_targeted()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()
+    check_network_split_snapshots()
     check_remote_bundle_wiring()
     check_remote_policy_wiring()
+    check_remote_progress_reporting()
     print("Harbor runner isolation checks passed")
