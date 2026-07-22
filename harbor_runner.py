@@ -120,6 +120,7 @@ REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
 REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
+LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 ORACLE_SPINNER_FRAMES = ("|", "/", "-", "\\")
 REMOTE_AGENT_CONFIGS = {
     ("claude-code", "anthropic/claude-opus-4-7"): "claude-opus",
@@ -222,6 +223,7 @@ class JobProgress:
 @dataclass
 class TrialArchive:
     job_name: str
+    agent: str
     label: str
     model: str
     job_dir: Path
@@ -265,7 +267,20 @@ class OracleArchive:
     result_path: Path
     finished: bool
     reward: float | None
+    exception_type: str | None
     mtime: float
+
+
+@dataclass
+class TaskArchiveState:
+    task_path: Path
+    archives: list[TrialArchive]
+    oracle: OracleArchive | None
+    missing_jobs: list[str]
+    unfinished: list[TrialArchive]
+    exception_archives: list[TrialArchive]
+    short_jobs: list[str]
+    finished_counts_by_job: dict[str, int]
 
 
 @dataclass
@@ -1040,6 +1055,101 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
     return destination
 
 
+def promote_remote_trajectory_archive(
+    archive_destination: Path,
+    trajectories_dir: Path,
+) -> Path:
+    """Promote a successful remote archive into the direct local layout.
+
+    Workbench archives retain a run root and task root so the download can be
+    validated and partial runs can be inspected. The local authoring workflow
+    exposes only the task's direct ``trajectories/`` contents after a
+    successful, exception-free result.
+    """
+    archive_destination = archive_destination.resolve()
+    trajectories_dir = trajectories_dir.expanduser().resolve()
+    if not archive_destination.is_dir():
+        raise RemoteClientError(
+            0,
+            "archive_layout",
+            "The downloaded trajectory archive is missing its extracted directory.",
+        )
+
+    direct_source = archive_destination / "trajectories"
+    if not direct_source.is_dir():
+        candidates = sorted(
+            child / "trajectories"
+            for child in archive_destination.iterdir()
+            if child.is_dir() and (child / "trajectories").is_dir()
+        )
+        if len(candidates) != 1:
+            raise RemoteClientError(
+                0,
+                "archive_layout",
+                "The downloaded trajectory archive does not contain one task trajectories directory.",
+            )
+        direct_source = candidates[0]
+
+    output_children = [
+        child
+        for child in sorted(direct_source.iterdir(), key=lambda path: path.name)
+        if child.name not in {"summary.md", "summary.json"}
+    ]
+    if not any(child.is_dir() for child in output_children):
+        raise RemoteClientError(
+            0,
+            "archive_layout",
+            "The downloaded trajectory archive contains no Oracle or agent trajectory directories.",
+        )
+
+    summary_source = next(
+        (
+            candidate
+            for candidate in (
+                direct_source / "summary.md",
+                archive_destination / "summary.md",
+                direct_source / "summary.json",
+                archive_destination / "summary.json",
+            )
+            if candidate.is_file()
+        ),
+        None,
+    )
+    trajectories_dir.parent.mkdir(parents=True, exist_ok=True)
+    stage_parent = Path(
+        tempfile.mkdtemp(
+            prefix=f".{archive_destination.name}.promote-",
+            dir=trajectories_dir.parent,
+        )
+    )
+    stage = stage_parent / trajectories_dir.name
+    stage.mkdir()
+    try:
+        if summary_source is not None:
+            summary_name = "summary.md" if summary_source.suffix == ".md" else "summary.json"
+            shutil.copy2(summary_source, stage / summary_name)
+        for child in output_children:
+            destination = stage / child.name
+            if child.is_symlink():
+                destination.symlink_to(os.readlink(child))
+            elif child.is_dir():
+                shutil.copytree(child, destination, symlinks=True)
+            elif child.is_file():
+                shutil.copy2(child, destination)
+
+        clear_trajectories_dir(trajectories_dir)
+        trajectories_dir.mkdir(parents=True, exist_ok=True)
+        for child in stage.iterdir():
+            shutil.move(str(child), str(trajectories_dir / child.name))
+    finally:
+        shutil.rmtree(stage_parent, ignore_errors=True)
+    print(
+        f"trajectory archive: promoted successful direct output -> {trajectories_dir}",
+        flush=True,
+    )
+    return trajectories_dir
+
+
 def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> int:
     state = status.get("state")
     if state == "ORACLE_FAILED":
@@ -1340,6 +1450,12 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             flush=True,
         )
         archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
+        remote_exit = remote_exit_code(status, results)
+        if remote_exit == 0:
+            archive_destination = promote_remote_trajectory_archive(
+                archive_destination,
+                args.completed_trajectories_dir,
+            )
         state.update({
             "run_id": run_id,
             "service_url": base,
@@ -1352,7 +1468,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         if request_path != service_run_path:
             save_remote_state(request_path, state)
         print(f"remote complete: trajectory archive available at {archive_destination}", flush=True)
-        return remote_exit_code(status, results)
+        return remote_exit
     except KeyboardInterrupt:
         if getattr(args, "cancel_on_interrupt", False) and isinstance(run_id, str) and base:
             try:
@@ -1531,6 +1647,31 @@ def clear_harbor_jobs_dir(jobs_dir: Path) -> None:
     children = list(resolved.iterdir())
     print(
         f"clearing Harbor jobs directory: {resolved} "
+        f"({len(children)} existing item(s))",
+        flush=True,
+    )
+    for child in children:
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
+
+
+def clear_trajectories_dir(trajectories_dir: Path) -> None:
+    """Remove the previous successful trajectory output before replacement."""
+    resolved = trajectories_dir.expanduser().resolve()
+    forbidden = {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}
+    if resolved in forbidden:
+        raise SystemExit(
+            f"error: refusing to clear unsafe trajectory directory: {resolved}"
+        )
+    if resolved.exists() and not resolved.is_dir():
+        raise SystemExit(f"error: trajectory path is not a directory: {resolved}")
+
+    resolved.mkdir(parents=True, exist_ok=True)
+    children = list(resolved.iterdir())
+    print(
+        f"clearing trajectory directory: {resolved} "
         f"({len(children)} existing item(s))",
         flush=True,
     )
@@ -2308,7 +2449,11 @@ def run_job(
     returncode = 2
     expected_trials = spec.num_tasks * spec.repeats
     completed_since: float | None = None
-    next_progress_at = started
+    next_progress_at = (
+        started + spec.progress_interval_sec
+        if spec.progress_interval_sec > 0
+        else started
+    )
     with spec.runner_log.open(mode, encoding="utf-8") as log:
         log.write(f"\n$ {redacted_command(spec.command)}\n\n")
         log.flush()
@@ -2842,6 +2987,7 @@ def collect_trial_archives(
 
             archive = TrialArchive(
                 job_name=result.job_name,
+                agent=result_by_job[result.job_name].agent,
                 label=result_by_job[result.job_name].label,
                 model=result_by_job[result.job_name].model,
                 job_dir=job_dir,
@@ -2953,6 +3099,7 @@ def collect_latest_oracle_archives(
                 result_path=result_path,
                 finished=bool(trial_result.get("finished_at")),
                 reward=trial_reward(trial_result),
+                exception_type=exception_type(trial_result),
                 mtime=result_path.stat().st_mtime,
             )
             existing = archives.get(task_path)
@@ -3168,11 +3315,25 @@ def copy_latest_oracle_archive(
         "result_path": str(oracle.result_path),
         "finished": oracle.finished,
         "reward": oracle.reward,
+        "exception_type": oracle.exception_type,
     }
     (oracle_dir / "oracle_archive.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     return True
+
+
+def copy_trajectory_summary(
+    *,
+    summary_path: Path,
+    markdown_summary_path: Path | None,
+    trajectories_dir: Path,
+) -> None:
+    trajectories_dir.mkdir(parents=True, exist_ok=True)
+    if markdown_summary_path is not None:
+        copy_file_if_exists(markdown_summary_path, trajectories_dir / "summary.md")
+    else:
+        copy_file_if_exists(summary_path, trajectories_dir / "summary.json")
 
 
 def archive_task_files(task_path: Path, task_archive_dir: Path) -> None:
@@ -3238,45 +3399,87 @@ def build_metric_cell(archives: list[TrialArchive]) -> str:
     return cell
 
 
+def build_oracle_metric_cell(
+    oracle: OracleArchive | None,
+    pass_threshold: float,
+) -> str:
+    if oracle is None:
+        return "-"
+    reward = format_metric(oracle.reward)
+    if oracle.exception_type is not None:
+        return f"exception, reward {reward}"
+    if not oracle.finished:
+        return f"incomplete, reward {reward}"
+    verdict = (
+        "pass"
+        if oracle.reward is not None and oracle.reward >= pass_threshold
+        else "fail"
+    )
+    return f"{verdict}, reward {reward}"
+
+
 def write_markdown_summary(
     *,
     jobs_dir: Path,
     tasks: list[Path],
     results: list[JobResult],
     run_id: str,
+    oracle_pass_threshold: float = 1.0,
 ) -> Path:
     jobs_dir.mkdir(parents=True, exist_ok=True)
     summary_path = jobs_dir / f"{run_id}.summary.md"
     archives_by_task = collect_trial_archives(results, tasks)
+    oracle_archives = collect_latest_oracle_archives(jobs_dir, tasks)
     archives_by_task_name: dict[str, list[TrialArchive]] = {}
     for task_path, archives in archives_by_task.items():
         archives_by_task_name.setdefault(task_path.name, []).extend(archives)
+    oracle_archives_by_name: dict[str, OracleArchive] = {}
+    for task_path, oracle in oracle_archives.items():
+        oracle_archives_by_name.setdefault(task_path.name, oracle)
     task_set = sorted({task.resolve() for task in tasks})
-    labels = [result.label for result in results]
-    job_by_label = {result.label: result.job_name for result in results}
+    agent_names = [result.agent for result in results]
 
     lines = [
         f"# Harbor Run Summary: {run_id}",
         "",
         f"- Updated: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
         f"- Tasks: {len(task_set)}",
-        f"- Jobs: {len(results)}",
+        f"- Oracle results: {len(oracle_archives)}",
+        f"- Agent jobs: {len(results)}",
         "",
-        "| Task | " + " | ".join(markdown_escape(label) for label in labels) + " | Status |",
-        "| --- | " + " | ".join("---" for _ in labels) + " | --- |",
+        "| Task | Oracle | "
+        + " | ".join(markdown_escape(name) for name in agent_names)
+        + " | Status |",
+        "| --- | --- | "
+        + " | ".join("---" for _ in agent_names)
+        + " | --- |",
     ]
 
     completed = 0
     for task in task_set:
         archives = archives_by_task.get(task) or archives_by_task_name.get(task.name, [])
-        cells = []
-        complete = True
+        oracle = oracle_archives.get(task) or oracle_archives_by_name.get(task.name)
+        cells = [build_oracle_metric_cell(oracle, oracle_pass_threshold)]
+        complete = bool(
+            oracle is not None
+            and oracle.finished
+            and oracle.exception_type is None
+            and oracle.reward is not None
+            and oracle.reward >= oracle_pass_threshold
+        )
         for result in results:
             job_archives = [
-                archive for archive in archives if archive.job_name == job_by_label[result.label]
+                archive for archive in archives if archive.job_name == result.job_name
             ]
             expected = result.n_trials_expected // len(task_set) if task_set else 0
-            if len(job_archives) < expected or any(not archive.finished for archive in job_archives):
+            if (
+                result.returncode != 0
+                or len(job_archives) < expected
+                or any(
+                    not archive.finished or archive.exception_type is not None
+                    for archive in job_archives
+                )
+            ):
                 complete = False
             cells.append(build_metric_cell(job_archives))
         if complete:
@@ -3311,10 +3514,9 @@ def archive_completed_task_runs(
     markdown_summary_path: Path | None = None,
     run_id: str,
     destination_root: Path,
+    oracle_pass_threshold: float = 1.0,
 ) -> list[Path]:
-    source_root = Path("completed_uploaded").resolve()
     destination_root = destination_root.resolve()
-    run_archive_dir = destination_root / run_id
     task_set = {task.resolve() for task in tasks}
     archives_by_task = collect_trial_archives(results, tasks)
     archives_by_task_name: dict[str, list[TrialArchive]] = {}
@@ -3333,24 +3535,15 @@ def archive_completed_task_runs(
             "error: cannot archive by folder name when task folder names are not unique"
         )
 
-    moved: list[Path] = []
-    incomplete: list[dict[str, object]] = []
-    oracle_copied = 0
+    failed_job_names = sorted(
+        result.job_name for result in results if result.returncode != 0
+    )
     expected_trials_by_job = {
         result.job_name: result.n_trials_expected // len(task_set)
         for result in results
         if len(task_set) > 0
     }
-    run_archive_dir.mkdir(parents=True, exist_ok=True)
-    if markdown_summary_path is not None:
-        copy_file_if_exists(markdown_summary_path, run_archive_dir / "summary.md")
-    else:
-        copy_file_if_exists(summary_path, run_archive_dir / "summary.json")
-    copy_run_job_metadata(
-        [archive for archives in archives_by_task.values() for archive in archives],
-        run_archive_dir,
-    )
-
+    task_states: list[TaskArchiveState] = []
     for task_path in sorted(task_set):
         archives = archives_by_task.get(task_path) or archives_by_task_name.get(
             task_path.name, []
@@ -3359,6 +3552,9 @@ def archive_completed_task_runs(
         archived_job_names = {archive.job_name for archive in archives}
         missing_jobs = sorted(job_names - archived_job_names)
         unfinished = [archive for archive in archives if not archive.finished]
+        exception_archives = [
+            archive for archive in archives if archive.exception_type is not None
+        ]
         short_jobs = []
         finished_counts_by_job: dict[str, int] = {}
         for job_name in sorted(job_names):
@@ -3372,23 +3568,119 @@ def archive_completed_task_runs(
             if actual < expected:
                 short_jobs.append(f"{job_name}: {actual}/{expected}")
 
+        task_states.append(
+            TaskArchiveState(
+                task_path=task_path,
+                archives=archives,
+                oracle=latest_oracles.get(task_path)
+                or latest_oracles_by_name.get(task_path.name),
+                missing_jobs=missing_jobs,
+                unfinished=unfinished,
+                exception_archives=exception_archives,
+                short_jobs=short_jobs,
+                finished_counts_by_job=finished_counts_by_job,
+            )
+        )
+
+    successful_archive = bool(task_states) and not failed_job_names and all(
+        not state.missing_jobs
+        and not state.unfinished
+        and not state.exception_archives
+        and not state.short_jobs
+        and state.oracle is not None
+        and state.oracle.finished
+        and state.oracle.exception_type is None
+        and state.oracle.reward is not None
+        and state.oracle.reward >= oracle_pass_threshold
+        for state in task_states
+    )
+
+    if successful_archive:
+        clear_trajectories_dir(destination_root)
+        destination_root.mkdir(parents=True, exist_ok=True)
+        if markdown_summary_path is not None:
+            copy_file_if_exists(markdown_summary_path, destination_root / "summary.md")
+        else:
+            copy_file_if_exists(summary_path, destination_root / "summary.json")
+
+        oracle_copied = 0
+        for state in task_states:
+            for archive in state.archives:
+                dst_trial_dir = (
+                    destination_root / slug(archive.agent) / archive.trial_dir.name
+                )
+                if dst_trial_dir.exists():
+                    continue
+                shutil.copytree(
+                    archive.trial_dir,
+                    dst_trial_dir,
+                    symlinks=True,
+                )
+            if copy_latest_oracle_archive(
+                task_path=state.task_path,
+                task_name=state.task_path.name,
+                trajectories_dir=destination_root,
+                latest_oracles=latest_oracles,
+                latest_oracles_by_name=latest_oracles_by_name,
+            ):
+                oracle_copied += 1
+
+        print(f"archive: wrote successful trajectories -> {destination_root}")
+        if oracle_copied:
+            print(f"archive: copied latest oracle trajectories for {oracle_copied} tasks")
+        return [destination_root]
+
+    # Preserve incomplete evidence under a run-specific directory. A partial
+    # run must not clear a previous successful direct trajectory archive.
+    moved: list[Path] = []
+    run_archive_dir = destination_root / run_id
+    run_archive_dir.mkdir(parents=True, exist_ok=True)
+    if markdown_summary_path is not None:
+        copy_file_if_exists(markdown_summary_path, run_archive_dir / "summary.md")
+    else:
+        copy_file_if_exists(summary_path, run_archive_dir / "summary.json")
+    copy_run_job_metadata(
+        [archive for archives in archives_by_task.values() for archive in archives],
+        run_archive_dir,
+    )
+
+    incomplete: list[dict[str, object]] = []
+    oracle_copied = 0
+    for state in task_states:
+        task_path = state.task_path
         task_archive_dir = run_archive_dir / task_path.name
+        task_archive_existed = task_archive_dir.exists()
         trajectories_dir = task_archive_dir / "trajectories"
-        if missing_jobs or unfinished or short_jobs:
-            finished_archives = [archive for archive in archives if archive.finished]
+        copy_trajectory_summary(
+            summary_path=summary_path,
+            markdown_summary_path=markdown_summary_path,
+            trajectories_dir=trajectories_dir,
+        )
+        if (
+            state.missing_jobs
+            or state.unfinished
+            or state.short_jobs
+            or failed_job_names
+            or state.exception_archives
+        ):
+            finished_archives = [archive for archive in state.archives if archive.finished]
             incomplete.append(
                 {
                     "task": task_path.name,
-                    "missing_jobs": missing_jobs,
+                    "missing_jobs": state.missing_jobs,
+                    "failed_jobs": failed_job_names,
                     "unfinished_trials": [
-                        str(archive.result_path) for archive in unfinished
+                        str(archive.result_path) for archive in state.unfinished
                     ],
-                    "short_jobs": short_jobs,
-                    "finished_counts_by_job": finished_counts_by_job,
+                    "exception_trials": [
+                        str(archive.result_path) for archive in state.exception_archives
+                    ],
+                    "short_jobs": state.short_jobs,
+                    "finished_counts_by_job": state.finished_counts_by_job,
                 }
             )
             if finished_archives:
-                if task_archive_dir.exists():
+                if task_archive_existed:
                     print(
                         f"archive: resuming existing partial trajectory archive: "
                         f"{task_archive_dir}"
@@ -3396,7 +3688,7 @@ def archive_completed_task_runs(
                 trajectories_dir.mkdir(parents=True, exist_ok=True)
                 for archive in finished_archives:
                     dst_trial_dir = (
-                        trajectories_dir / archive.label / archive.trial_dir.name
+                        trajectories_dir / slug(archive.agent) / archive.trial_dir.name
                     )
                     if dst_trial_dir.exists():
                         continue
@@ -3416,37 +3708,12 @@ def archive_completed_task_runs(
                 archive_task_files(task_path, task_archive_dir)
             print(
                 f"archive: partial {task_path.name}; "
-                f"missing_jobs={missing_jobs}, "
-                f"unfinished={len(unfinished)}, short_jobs={short_jobs}"
+                f"missing_jobs={state.missing_jobs}, "
+                f"failed_jobs={failed_job_names}, "
+                f"exceptions={len(state.exception_archives)}, "
+                f"unfinished={len(state.unfinished)}, short_jobs={state.short_jobs}"
             )
             continue
-
-        if task_archive_dir.exists():
-            print(f"archive: resuming existing trajectory archive: {task_archive_dir}")
-        trajectories_dir.mkdir(parents=True, exist_ok=True)
-
-        for archive in archives:
-            dst_trial_dir = trajectories_dir / archive.label / archive.trial_dir.name
-            if dst_trial_dir.exists():
-                continue
-            shutil.copytree(
-                archive.trial_dir,
-                dst_trial_dir,
-                symlinks=True,
-            )
-        if copy_latest_oracle_archive(
-            task_path=task_path,
-            task_name=task_path.name,
-            trajectories_dir=trajectories_dir,
-            latest_oracles=latest_oracles,
-            latest_oracles_by_name=latest_oracles_by_name,
-        ):
-            oracle_copied += 1
-
-        archive_task_files(task_path, task_archive_dir)
-        print(f"archive: wrote {task_path.name} trajectories -> {task_archive_dir}")
-
-        moved.append(task_archive_dir)
 
     if incomplete:
         incomplete_path = run_archive_dir / "incomplete_tasks.json"
@@ -3666,11 +3933,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--progress-interval-sec",
         type=float,
-        default=60.0,
+        default=LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS,
         help=(
             "While local Oracle and agent jobs are running, print completed "
             "trial counts and pass/fail stats at this interval; set <= 0 to "
-            "disable local progress (default: 60)."
+            "disable local progress (default: 30)."
         ),
     )
     parser.add_argument(
@@ -3868,15 +4135,18 @@ def main(argv: list[str]) -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "After model jobs finish, write a single per-run trajectory archive "
-            "for this task, and include the resolved task files (default: enabled)."
+            "After a successful exception-free run, replace the direct trajectory "
+            "folders under --completed-trajectories-dir (default: enabled)."
         ),
     )
     parser.add_argument(
         "--completed-trajectories-dir",
         type=Path,
         default=Path("trajectories"),
-        help="Destination root for per-run trajectory archives (default: trajectories).",
+        help=(
+            "Directory for the current oracle/agent trajectory folders and summary "
+            "(default: ./trajectories)."
+        ),
     )
     parser.add_argument(
         "--task-snapshot",
@@ -4158,8 +4428,10 @@ def main(argv: list[str]) -> int:
             tasks=tasks,
             results=results,
             run_id=args.run_id,
+            oracle_pass_threshold=args.pass_threshold,
         )
         print(f"markdown:  {markdown_summary_path}")
+        trajectory_archive_path: Path | None = None
         if args.archive_completed:
             try:
                 moved = archive_completed_task_runs(
@@ -4169,14 +4441,26 @@ def main(argv: list[str]) -> int:
                     markdown_summary_path=markdown_summary_path,
                     run_id=args.run_id,
                     destination_root=args.completed_trajectories_dir,
+                    oracle_pass_threshold=args.pass_threshold,
                 )
-                print(f"trajectory archive: {args.completed_trajectories_dir.resolve() / args.run_id}")
-                print(f"archived task folders: {len(moved)}")
+                trajectory_archive_path = (
+                    moved[0]
+                    if moved
+                    else args.completed_trajectories_dir.resolve() / args.run_id
+                )
+                print(f"trajectory archive: {trajectory_archive_path}")
+                print(f"archived trajectory directories: {len(moved)}")
             finally:
                 cleanup_modal_for_args(args)
         else:
             cleanup_modal_for_args(args)
-        print(f"run result: summary document: {markdown_summary_path}")
+        summary_document = (
+            trajectory_archive_path / "summary.md"
+            if trajectory_archive_path is not None
+            and (trajectory_archive_path / "summary.md").is_file()
+            else markdown_summary_path
+        )
+        print(f"run result: summary document: {summary_document}")
         return 0
 
     print()
@@ -4233,6 +4517,7 @@ def main(argv: list[str]) -> int:
         tasks=tasks,
         results=results,
         run_id=args.run_id,
+        oracle_pass_threshold=args.pass_threshold,
     )
 
     failed = [r for r in results if r.returncode != 0]
@@ -4244,6 +4529,7 @@ def main(argv: list[str]) -> int:
         print(f"failed jobs (resume with: --run-id {args.run_id} --resume):")
         for r in failed:
             print(f"  - {r.label}: exit {r.returncode}  {r.runner_log}")
+    trajectory_archive_path: Path | None = None
     if args.archive_completed:
         try:
             moved = archive_completed_task_runs(
@@ -4253,9 +4539,15 @@ def main(argv: list[str]) -> int:
                 markdown_summary_path=markdown_summary_path,
                 run_id=args.run_id,
                 destination_root=args.completed_trajectories_dir,
+                oracle_pass_threshold=args.pass_threshold,
             )
-            print(f"trajectory archive: {args.completed_trajectories_dir.resolve() / args.run_id}")
-            print(f"archived task folders: {len(moved)}")
+            trajectory_archive_path = (
+                moved[0]
+                if moved
+                else args.completed_trajectories_dir.resolve() / args.run_id
+            )
+            print(f"trajectory archive: {trajectory_archive_path}")
+            print(f"archived trajectory directories: {len(moved)}")
         finally:
             cleanup_modal_for_args(args)
     else:
@@ -4263,7 +4555,13 @@ def main(argv: list[str]) -> int:
     if failed:
         print(f"run result: failure/exception details: {failed[0].runner_log}")
     else:
-        print(f"run result: summary document: {markdown_summary_path}")
+        summary_document = (
+            trajectory_archive_path / "summary.md"
+            if trajectory_archive_path is not None
+            and (trajectory_archive_path / "summary.md").is_file()
+            else markdown_summary_path
+        )
+        print(f"run result: summary document: {summary_document}")
     if interrupted:
         return 130
     if failed:

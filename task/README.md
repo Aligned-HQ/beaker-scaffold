@@ -34,7 +34,9 @@ For a Harbor task, use the task directory rather than the project wrapper:
 ./harbor_runner.py task --dry-run
 ```
 
-After a real multi-agent run, the vendored runner writes its Oracle-gated
-evidence under the project-level `trajectories/<run-id>/` directory. Run the
-trajectory review described in [`../authoring-guide.md`](../authoring-guide.md)
-against the archived task trajectory directory.
+After a real multi-agent run, the vendored runner writes its successful
+Oracle-gated evidence directly under the project-level `trajectories/` folder:
+`oracle/`, one folder per agent, and `summary.md`. Run the trajectory review
+described in [`../authoring-guide.md`](../authoring-guide.md) against that
+folder. A partial or interrupted run is retained under a run-id subdirectory
+for debugging and does not replace the previous successful direct output.

@@ -13,6 +13,7 @@ task/output/
 harbor-jobs/
 *.modal-run.json
 completed_trajectories/
+.submission.tmp.*
 
 # Do not commit local credentials or machine-specific settings.
 .env

@@ -103,21 +103,26 @@ machine; task environments must still run without internet access.
    completion or interruption. Local Modal runs use separate immutable task
    snapshots: the Oracle snapshot is offline, while the agent snapshot enables
    internet access. While the local Oracle is running, the terminal shows a
-   live spinner and result percentage; redirected output receives periodic
-   progress lines. During a remote run it prints Workbench phase
-   changes, Oracle and per-agent trial counts, periodic heartbeats, result
-   summaries, and trajectory-download progress. Use
+   live spinner and result percentage. The local agent scoreboard refreshes
+   every 30 seconds by default; redirected output receives periodic progress
+   lines. On a successful local or remote run with no job or trial exceptions,
+   the archive contains `trajectories/<agent-name>/` for each agent,
+   `trajectories/oracle/`, and the combined `trajectories/summary.md`. During a
+   remote run
+   it prints Workbench phase changes, Oracle and per-agent trial
+   counts, periodic heartbeats, result summaries, and trajectory-download
+   progress. Use
    `--remote-progress-interval-sec SECONDS` to change the heartbeat interval
    (30 seconds by default).
 
 9. Review the completed trajectory:
 
    ```bash
-   ./scripts/run-trajectory-review.sh trajectories/<run-id>
+   ./scripts/run-trajectory-review.sh trajectories
    ```
 
-   Replace `<run-id>` with the identifier printed by the Harbor runner. The
-   completed archive is written under `trajectories/<run-id>/`.
+   The runner clears and replaces the direct `trajectories/` output only after
+   a successful, exception-free run.
 
 10. Run the final strict scaffold validation:
 
@@ -131,11 +136,19 @@ machine; task environments must still run without internet access.
     ```bash
     ./scripts/verify-skill-runs.sh \
       --task task \
-      --trajectory trajectories/<run-id>
+      --trajectory trajectories
     ```
 
-    Keep the task files, skill reports, status file, Harbor evidence, and
-    trajectory archive together with the submission.
+    Package the submission directories together:
+
+    ```bash
+    ./scripts/package-submission.sh
+    ```
+
+    If `submission/` already exists, the script asks for confirmation before
+    replacing it. Packaging also checks `trajectories/summary.md` and requires
+    the average Claude/Codex/Gemini pass rate to be below 50%; Oracle is
+    ignored. Upload the resulting `submission/` directory to Workbench.
 
 ## Layout
 
@@ -153,6 +166,7 @@ machine; task environments must still run without internet access.
 │   ├── run-task-fixer.sh              # task-fixer entrypoint
 │   ├── run-task-review.sh             # task-review entrypoint
 │   ├── run-trajectory-review.sh       # trajectory-review entrypoint
+│   ├── package-submission.sh          # assemble the Workbench submission
 │   └── verify-skill-runs.sh            # submission report/status checker
 ├── skill-reports/                     # latest Markdown result from each skill
 │   ├── task-fixer.md

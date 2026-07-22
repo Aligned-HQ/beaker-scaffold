@@ -378,13 +378,22 @@ The default run ID includes a random suffix. Use `--run-id ID --resume` to
 resume an interrupted Harbor run; starting another live run with an already
 claimed ID is rejected.
 
+The local agent progress scoreboard updates every 30 seconds by default. For a
+successful local or remote run, when all agent jobs finish without trial
+exceptions, the runner copies
+their trial folders under
+`trajectories/<agent-name>/` and copies the Oracle trial under
+`trajectories/oracle/`. The combined Oracle/agent `summary.md` is copied to
+`trajectories/summary.md`. The existing `trajectories/` contents are cleared
+only after the success/no-exception gate passes. Runs with missing results,
+non-zero job exits, or trial exceptions remain marked partial for inspection.
+
 ## 9. Run the trajectory-review script
 
-After the Harbor campaign completes, review the archived trajectory. Replace
-`<run-id>` with the identifier printed by the runner:
+After the Harbor campaign completes, review the archived trajectory:
 
 ```bash
-./scripts/run-trajectory-review.sh trajectories/<run-id>
+./scripts/run-trajectory-review.sh trajectories
 ```
 
 The trajectory review distinguishes genuine scientific failures from structural
@@ -410,12 +419,19 @@ Before uploading, verify the skill reports and status:
 ```bash
 ./scripts/verify-skill-runs.sh \
   --task task \
-  --trajectory trajectories/<run-id>
+  --trajectory trajectories
 ```
 
+Package the task, trajectories, and skill reports together before uploading:
+
+```bash
+./scripts/package-submission.sh
+```
+
+If `submission/` already exists, the script asks for confirmation before
+replacing it. It also checks `trajectories/summary.md` and requires the
+average Claude/Codex/Gemini pass rate to be below 50%; Oracle is ignored.
 Remove generated caches, check that all intended inputs are tracked, and
-inspect the final diff. The project should read coherently from prompt to
-solution process to verifier to trajectory evidence. Keep `skill-reports/*.md`
-and `skill-status.md` with the submission. Then upload and submit the task on
+inspect the final diff. Upload the resulting `submission/` directory to
 Workbench. If a non-specialist cannot tell what a successful result means,
 improve the task README and metadata rather than adding more test code.

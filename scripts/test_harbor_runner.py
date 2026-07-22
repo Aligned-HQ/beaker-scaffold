@@ -9,6 +9,7 @@ import contextlib
 import json
 import tarfile
 import tempfile
+from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -135,6 +136,138 @@ def check_snapshot_results_map_to_original_task() -> None:
 
         assert list(archives) == [original_task.resolve()]
         assert len(archives[original_task.resolve()]) == 1
+        assert archives[original_task.resolve()][0].agent == "claude-code"
+
+
+def check_successful_archive_uses_agent_names_and_oracle() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-trajectory-archive-test-") as raw:
+        root = Path(raw)
+        original_task = root / "task"
+        original_task.mkdir()
+        (original_task / "instruction.md").write_text("task", encoding="utf-8")
+        jobs_dir = root / "harbor-jobs"
+        run_id = "archive-test"
+        snapshot = jobs_dir / f"{run_id}.agent-task-snapshot"
+        oracle_snapshot = jobs_dir / f"{run_id}.oracle-task-snapshot"
+        agent_specs = [
+            ("claude-code", "claude-opus", "anthropic/claude-opus-4-7"),
+            ("codex", "codex-gpt-5-5", "openai/gpt-5.5"),
+            ("gemini-cli", "gemini-3-1-pro-preview", "google/gemini-3.1-pro-preview"),
+        ]
+        results = []
+        for agent, label, model in agent_specs:
+            job_name = f"{run_id}-{label}"
+            job_dir = jobs_dir / job_name
+            trial_dir = job_dir / f"{run_id}.agent__{agent}"
+            trial_dir.mkdir(parents=True)
+            (trial_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "task_id": {"path": str(snapshot)},
+                        "finished_at": "2026-07-22T21:19:06Z",
+                        "verifier_result": {"rewards": {"reward": 1.0}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            results.append(
+                harbor_runner.JobResult(
+                    agent=agent,
+                    model=model,
+                    label=label,
+                    job_name=job_name,
+                    n_trials_expected=1,
+                    returncode=0,
+                    elapsed_sec=1.0,
+                    job_dir=str(job_dir),
+                    runner_log=str(jobs_dir / f"{job_name}.runner.log"),
+                    resumed=False,
+                )
+            )
+
+        oracle_dir = jobs_dir / f"{run_id}-oracle"
+        oracle_trial_dir = oracle_dir / f"{run_id}.oracle__trial"
+        oracle_trial_dir.mkdir(parents=True)
+        (oracle_dir / "config.json").write_text(
+            json.dumps({"agents": [{"name": "oracle"}]}),
+            encoding="utf-8",
+        )
+        (oracle_trial_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_id": {"path": str(oracle_snapshot)},
+                    "finished_at": "2026-07-22T21:19:06Z",
+                    "verifier_result": {"rewards": {"reward": 1.0}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        summary_path = harbor_runner.write_summary(jobs_dir, original_task, run_id, results)
+        markdown_path = harbor_runner.write_markdown_summary(
+            jobs_dir=jobs_dir,
+            tasks=[original_task],
+            results=results,
+            run_id=run_id,
+        )
+        destination = root / "trajectories"
+        destination.mkdir()
+        (destination / "stale-run.marker").write_text("old", encoding="utf-8")
+        moved = harbor_runner.archive_completed_task_runs(
+            tasks=[original_task],
+            results=results,
+            summary_path=summary_path,
+            markdown_summary_path=markdown_path,
+            run_id=run_id,
+            destination_root=destination,
+        )
+
+        trajectory_root = destination
+        assert moved == [destination]
+        assert all((trajectory_root / agent).is_dir() for agent, _, _ in agent_specs)
+        assert (trajectory_root / "oracle").is_dir()
+        assert not (trajectory_root / "stale-run.marker").exists()
+        trajectory_summary = trajectory_root / "summary.md"
+        assert trajectory_summary.is_file()
+        summary_text = trajectory_summary.read_text(encoding="utf-8")
+        assert "| Task | Oracle | claude-code | codex | gemini-cli | Status |" in summary_text
+        assert "| task | pass, reward 1 |" in summary_text
+
+        retained = trajectory_root / "previous-success.marker"
+        retained.write_text("keep", encoding="utf-8")
+        partial_result = replace(results[0], n_trials_expected=2)
+        harbor_runner.archive_completed_task_runs(
+            tasks=[original_task],
+            results=[partial_result],
+            summary_path=summary_path,
+            markdown_summary_path=markdown_path,
+            run_id="partial-follow-up",
+            destination_root=destination,
+        )
+        assert retained.is_file()
+        assert (trajectory_root / "partial-follow-up").is_dir()
+
+
+def check_remote_archive_promotion_uses_direct_layout() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-archive-test-") as raw:
+        root = Path(raw)
+        destination = root / "trajectories"
+        archive = destination / "hr_remote-run"
+        source = archive / "example-task" / "trajectories"
+        (source / "oracle" / "trial-0").mkdir(parents=True)
+        (source / "claude-code" / "trial-0").mkdir(parents=True)
+        (source / "summary.md").write_text("# remote summary\n", encoding="utf-8")
+        (destination / "stale-output").mkdir(parents=True)
+        (destination / "stale-output" / "old.txt").write_text("old", encoding="utf-8")
+
+        promoted = harbor_runner.promote_remote_trajectory_archive(archive, destination)
+
+        assert promoted == destination.resolve()
+        assert (destination / "summary.md").is_file()
+        assert (destination / "oracle" / "trial-0").is_dir()
+        assert (destination / "claude-code" / "trial-0").is_dir()
+        assert not (destination / "stale-output").exists()
+        assert not archive.exists()
 
 
 def check_sigterm_enters_cleanup_path() -> None:
@@ -293,6 +426,8 @@ if __name__ == "__main__":
     check_cleanup_is_targeted()
     check_jobs_dir_is_cleared_for_new_runs()
     check_snapshot_results_map_to_original_task()
+    check_successful_archive_uses_agent_names_and_oracle()
+    check_remote_archive_promotion_uses_direct_layout()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()
     check_network_split_snapshots()
