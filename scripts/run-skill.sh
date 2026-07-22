@@ -18,7 +18,7 @@ Skills:
 Options:
   --runner codex|claude|auto  Agent CLI to use (default: auto).
   --target PATH               Explicit target path.
-  --docker-access auto|on|off Allow Codex task-fixer/task-review to reach Docker (default: auto).
+  --docker-access auto|on|off Allow task-fixer/task-review to reach Docker (default: auto).
   --dry-run                   Record the command without invoking an agent.
   -h, --help                  Show this help.
 
@@ -154,13 +154,21 @@ case "$RUNNER" in
 esac
 
 # A workspace-write Codex sandbox generally cannot reach the host Docker
-# socket. Task-fixer and task-review both need to inspect task images, so their
-# automatic mode uses Codex's Docker-capable sandbox. This does not bypass the
-# approval policy and can be disabled explicitly when the host Docker daemon is
-# unavailable or the caller wants static-only checks.
+# socket. Claude Code's normal acceptEdits mode can also stop at a tool
+# permission prompt in non-interactive runs. Task-fixer and task-review both
+# need to inspect task images, so their automatic mode selects a Docker-capable
+# execution mode for the chosen CLI. This does not repair a denied host daemon
+# or authorize an unapproved remote context; use --docker-access off for a
+# static-only run.
 CODEX_SANDBOX="workspace-write"
 if [[ "$RUNNER" = codex && ( "$SKILL" = task-fixer || "$SKILL" = task-review ) && "$DOCKER_ACCESS" != off ]]; then
     CODEX_SANDBOX="danger-full-access"
+fi
+CLAUDE_PERMISSION_MODE="acceptEdits"
+CLAUDE_ALLOW_DANGEROUS=0
+if [[ "$RUNNER" = claude && ( "$SKILL" = task-fixer || "$SKILL" = task-review ) && "$DOCKER_ACCESS" != off ]]; then
+    CLAUDE_PERMISSION_MODE="bypassPermissions"
+    CLAUDE_ALLOW_DANGEROUS=1
 fi
 
 SKILL_FILE="${SKILL_ROOT}/${SKILL}/SKILL.md"
@@ -418,6 +426,7 @@ write_report() {
         printf '| Runner | `%s` |\n' "$RUNNER"
         printf '| Docker access | `%s` |\n' "$DOCKER_ACCESS"
         printf '| Codex sandbox | `%s` |\n' "$CODEX_SANDBOX"
+        printf '| Claude permission mode | `%s` |\n' "$CLAUDE_PERMISSION_MODE"
         printf '| Target | `%s` |\n' "$TARGET_REL"
         printf '| Started (UTC) | `%s` |\n' "$STARTED_AT"
         printf '| Finished (UTC) | `%s` |\n' "$ended_at"
@@ -486,11 +495,13 @@ each final runtime or separate verifier image must be at most 2 GB
 (2,000,000,000 bytes). Preserve those constraints and do not enable internet
 access to work around a bootstrap or dependency issue.
 
-Docker access mode for this invocation is ${DOCKER_ACCESS}. If this is a Codex
-task-fixer or task-review run, Docker access is provided through the wrapper-selected
-${CODEX_SANDBOX} sandbox; use Docker only for the target task static image
-validation and cleanup. The skill cannot repair a host Docker daemon or grant
-access to an unapproved remote daemon.
+Docker access mode for this invocation is ${DOCKER_ACCESS}. For a Codex
+task-fixer or task-review run, Docker access is provided through the
+wrapper-selected ${CODEX_SANDBOX} sandbox. For a Claude Code task-fixer or
+task-review run, the wrapper selects ${CLAUDE_PERMISSION_MODE} when Docker
+access is not off. Use Docker only for the target task static image validation
+and cleanup. The skill cannot repair a host Docker daemon or grant access to
+an unapproved remote daemon.
 
 Use the required skill workflow and evidence rules. For task-fixer, make the
 smallest task-local edits needed and return only the final handoff, without
@@ -524,12 +535,16 @@ if [[ "$RUNNER" = codex ]]; then
 else
     (
         cd -- "$REPO_ROOT" || exit 1
-        "$RUNNER_BIN" \
-            --print \
-            --no-session-persistence \
-            --permission-mode acceptEdits \
-            --add-dir "$REPO_ROOT" \
-            "$PROMPT"
+        CLAUDE_ARGS=(
+            --print
+            --no-session-persistence
+            --permission-mode "$CLAUDE_PERMISSION_MODE"
+            --add-dir "$REPO_ROOT"
+        )
+        if ((CLAUDE_ALLOW_DANGEROUS)); then
+            CLAUDE_ARGS+=(--allow-dangerously-skip-permissions)
+        fi
+        "$RUNNER_BIN" "${CLAUDE_ARGS[@]}" "$PROMPT"
     ) 2>&1 | tee "$OUTPUT_TMP"
     EXIT_CODE=${PIPESTATUS[0]}
 fi

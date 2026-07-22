@@ -166,6 +166,8 @@ SHUTDOWN_MODAL_COMPLETED = False
 MODAL_CLEANUP_ARMED = False
 MODAL_APP_NAME: str | None = None
 
+DOTENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 @dataclass(frozen=True)
 class AgentSpec:
@@ -292,6 +294,79 @@ class OracleSortMoveResult:
     destination: str | None
     result_path: str | None
     error: str | None = None
+
+
+def _parse_dotenv_value(raw: str, *, path: Path, line_number: int) -> str:
+    """Parse the small, dependency-free .env syntax used by the runner."""
+    value = raw.strip()
+    if not value:
+        return ""
+
+    def valid_suffix(suffix: str) -> bool:
+        suffix = suffix.strip()
+        return not suffix or suffix.startswith("#")
+
+    if value[0] == "'":
+        closing = value.find("'", 1)
+        if closing < 0 or not valid_suffix(value[closing + 1 :]):
+            raise SystemExit(f"error: invalid quoted value in {path}:{line_number}")
+        return value[1:closing]
+    if value[0] == '"':
+        chars: list[str] = []
+        escaped = False
+        closing = -1
+        for index, char in enumerate(value[1:], start=1):
+            if escaped:
+                chars.append({"n": "\n", "r": "\r", "t": "\t"}.get(char, f"\\{char}"))
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                closing = index
+                break
+            else:
+                chars.append(char)
+        if closing < 0 or escaped or not valid_suffix(value[closing + 1 :]):
+            raise SystemExit(f"error: invalid quoted value in {path}:{line_number}")
+        return "".join(chars)
+
+    comment_start = -1
+    for index, char in enumerate(value):
+        if char == "#" and (index == 0 or value[index - 1].isspace()):
+            comment_start = index
+            break
+    return value[:comment_start].rstrip() if comment_start >= 0 else value
+
+
+def load_dotenv(path: Path | None = None) -> Path | None:
+    """Load a local .env file without overwriting explicitly exported values."""
+    candidates: list[Path] = []
+    if path is not None:
+        candidates.append(path)
+    else:
+        candidates.extend(
+            (
+                Path.cwd() / ".env",
+                Path(__file__).resolve().parent / ".env",
+            )
+        )
+    env_path = next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
+    if env_path is None:
+        return None
+
+    for line_number, raw_line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, raw_value = line.partition("=")
+        key = key.strip()
+        if not separator or not DOTENV_KEY_RE.fullmatch(key):
+            raise SystemExit(f"error: invalid .env assignment in {env_path}:{line_number}")
+        if key not in os.environ:
+            os.environ[key] = _parse_dotenv_value(raw_value, path=env_path, line_number=line_number)
+    return env_path
 
 
 def is_task_dir(path: Path) -> bool:
@@ -3820,6 +3895,7 @@ def write_oracle_gate_summary(
 
 
 def main(argv: list[str]) -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "path",

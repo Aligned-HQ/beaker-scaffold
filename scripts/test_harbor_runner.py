@@ -7,6 +7,7 @@ import sys
 import io
 import contextlib
 import json
+import os
 import tarfile
 import tempfile
 from dataclasses import replace
@@ -350,6 +351,53 @@ def check_agent_progress_order() -> None:
     assert "gemini-pro: gemini update" in block
 
 
+def check_remote_defaults_load_dotenv() -> None:
+    keys = ("WORKBENCH_HARBOR_SERVICE_URL", "WORKBENCH_RUNNER_TOKEN")
+    missing = object()
+    original_values = {key: os.environ.get(key, missing) for key in keys}
+    original_cwd = Path.cwd()
+    original_run_remote = harbor_runner.run_remote
+    seen: dict[str, object] = {}
+
+    with tempfile.TemporaryDirectory(prefix="beaker-dotenv-test-") as raw:
+        root = Path(raw)
+        task_root = root / "task"
+        task_root.mkdir()
+        (task_root / "task.toml").write_text("", encoding="utf-8")
+        (task_root / "instruction.md").write_text("task\n", encoding="utf-8")
+        (root / ".env").write_text(
+            "WORKBENCH_HARBOR_SERVICE_URL=\"https://example.test/v1\"\n"
+            "export WORKBENCH_RUNNER_TOKEN=dotenv-token # local credential\n",
+            encoding="utf-8",
+        )
+
+        def fake_run_remote(task: Path, args: object) -> int:
+            seen["task"] = task
+            seen["args"] = args
+            return 0
+
+        os.environ.pop("WORKBENCH_HARBOR_SERVICE_URL", None)
+        os.environ.pop("WORKBENCH_RUNNER_TOKEN", None)
+        harbor_runner.run_remote = fake_run_remote  # type: ignore[assignment]
+        os.chdir(root)
+        try:
+            assert harbor_runner.main(["task", "--remote"]) == 0
+        finally:
+            os.chdir(original_cwd)
+            harbor_runner.run_remote = original_run_remote
+
+    for key, value in original_values.items():
+        if value is missing:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+    args = seen["args"]
+    assert seen["task"] == task_root.resolve()
+    assert getattr(args, "service_url") == "https://example.test/v1"
+    assert getattr(args, "workbench_token") == "dotenv-token"
+
+
 def check_remote_bundle_wiring() -> None:
     task_root = Path(__file__).resolve().parents[1] / "task"
     archive, digest, size = harbor_runner.build_remote_task_bundle(task_root)
@@ -433,6 +481,7 @@ if __name__ == "__main__":
     check_network_split_snapshots()
     check_oracle_spinner()
     check_agent_progress_order()
+    check_remote_defaults_load_dotenv()
     check_remote_bundle_wiring()
     check_remote_policy_wiring()
     check_remote_progress_reporting()

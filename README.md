@@ -45,8 +45,9 @@ machine; task environments must still run without internet access.
    ./scripts/run-task-fixer.sh task
    ```
 
-   The Codex wrappers give task-fixer and task-review Docker-capable sandbox
-   access by default so they can inspect the task images. Use
+   The skill wrappers give task-fixer and task-review Docker-capable execution
+   by default so they can inspect the task images: Codex uses its Docker-capable
+   sandbox and Claude Code uses its bypass-permissions mode. Use
    `./scripts/run-task-fixer.sh task --docker-access off` for a static-only
    run, or `--docker-access on` to make the setting explicit. If dependencies
    are not already available in an approved offline source, vendor them on the
@@ -68,52 +69,62 @@ machine; task environments must still run without internet access.
    ./harbor_runner.py task --smoke-test
    ```
 
-8. Run the Harbor task runner. Configure Modal and provider credentials through
-   your approved secret mechanism before starting; do not put API keys in task
-   files or commit an `.env` file.
+8. Run the Harbor task runner. The default is a local Modal run; the alternate
+   `--remote` mode submits the single task to the Workbench Harbor service.
+   Do not put API keys in task files or commit an `.env` file.
 
    ```bash
+   # Local Modal run: Harbor and Modal must be installed/authenticated.
    ./harbor_runner.py task
+   # Optional: pass names of existing Modal Secrets, never their values.
+   ./harbor_runner.py task --modal-secret openai-api-key \
+     --modal-secret anthropic-api-key --modal-secret google-api-key
    ```
 
-   A fresh run clears the contents of the configured `harbor-jobs/` directory
-   first, so it retains only the current run's output. Use `--resume` to
-   preserve an interrupted run, or `--archive-only` to process existing output
-   without clearing it.
+   For local runs, the runner validates the offline source task and amd64
+   Dockerfiles, creates separate immutable offline Oracle and internet-enabled
+   agent snapshots, runs one Oracle attempt first, and starts the three agent
+   jobs only if the Oracle passes. The defaults are 3 attempts with concurrency
+   3 per agent (9 trials per model, 27 total), with all three agent jobs started
+   concurrently. A fresh run clears `harbor-jobs/`; use `--resume` with the
+   printed run ID to preserve and resume it. `--archive-only` processes existing
+   local output without clearing it.
+
+   Modal control-plane authentication comes from the local Modal CLI/SDK. The
+   `--modal-secret` values are names of existing Modal Secrets containing the
+   provider credentials; their values stay in Modal. The runner gives each
+   local run a unique Modal App and stops only that app on normal completion or
+   local interruption by default. Use `--no-shutdown-modal` only when another
+   owner is handling cleanup. The host Docker daemon is used by the preceding
+   smoke test and image checks; the Harbor task jobs themselves run on Modal,
+   and this runner does not invoke local agent CLI processes.
 
    To submit the task to the Workbench Harbor service instead, create a local
-   environment file and source it before starting the remote runner:
+   environment file before starting the remote runner. The runner loads `.env`
+   automatically:
 
    ```bash
    cp .env.example .env
    # Edit .env and paste your token from Workbench → Settings → Access token.
-   set -a
-   source .env
-   set +a
    ./harbor_runner.py task --remote
    ```
 
    The `.env` file is ignored by Git and excluded from remote task bundles. Each
    user must use their own scoped `WORKBENCH_RUNNER_TOKEN`; never share one token
-   across users.
+   across users. Remote mode does not accept local secret/env overrides because
+   Workbench owns the Modal and provider credential configuration.
 
-   The runner executes the Oracle first and starts the three agent setups only
-   if the Oracle passes. The default model jobs are Claude Code, Codex, and
-   Gemini CLI. Each run gets an isolated Modal App and is cleaned up on normal
-   completion or interruption. Local Modal runs use separate immutable task
-   snapshots: the Oracle snapshot is offline, while the agent snapshot enables
-   internet access. While the local Oracle is running, the terminal shows a
-   live spinner and result percentage. The local agent scoreboard refreshes
-   every 30 seconds by default; redirected output receives periodic progress
-   lines. On a successful local or remote run with no job or trial exceptions,
-   the archive contains `trajectories/<agent-name>/` for each agent,
-   `trajectories/oracle/`, and the combined `trajectories/summary.md`. During a
-   remote run
-   it prints Workbench phase changes, Oracle and per-agent trial
-   counts, periodic heartbeats, result summaries, and trajectory-download
-   progress. Use
-   `--remote-progress-interval-sec SECONDS` to change the heartbeat interval
-   (30 seconds by default).
+   Local runs show an Oracle spinner in a terminal and print an ordered agent
+   progress scoreboard every 30 seconds by default. On a successful,
+   exception-free run, the archive contains `trajectories/oracle/`,
+   `trajectories/claude-code/`, `trajectories/codex/`,
+   `trajectories/gemini-cli/`, and `trajectories/summary.md`. Partial runs do
+   not replace a previous successful direct archive. Remote runs print
+   Workbench state changes, Oracle and per-agent trial counts, heartbeats,
+   result summaries, and trajectory-download progress. Use
+   `--remote-progress-interval-sec SECONDS` to change the remote heartbeat
+   interval (30 seconds by default). Ctrl-C leaves a remote run running unless
+   `--cancel-on-interrupt` is supplied.
 
 9. Review the completed trajectory:
 
