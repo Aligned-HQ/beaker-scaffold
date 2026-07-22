@@ -31,6 +31,26 @@ Every reviewed task must satisfy the client's offline and image-size policy:
 These are deployment gates in addition to the rubric criteria. A task that
 violates them is not ready for upload even if its scientific verifier passes.
 
+## Docker access for deployment-gate evidence
+
+When run through `scripts/run-task-review.sh` with Codex, the wrapper's
+default `--docker-access auto` mode uses Codex's `danger-full-access` sandbox
+so the review can inspect an already configured local Docker daemon. Make it
+explicit with:
+
+```bash
+./scripts/run-task-review.sh task --docker-access on
+```
+
+Use `--docker-access off` for a static-only review. Full access is a broad
+local permission for a trusted checkout; it does not repair the daemon, change
+socket permissions, or authorize an unapproved remote context. Before marking
+Docker evidence unavailable, inspect `docker context show`, `docker context ls`,
+`docker info`, and `DOCKER_HOST`. Use a reachable, already configured context
+explicitly when appropriate. If all approved contexts are denied, continue
+the review and mark image architecture/size evidence **UNVERIFIED**; do not
+claim a pass from Dockerfile text or weaken the offline policy.
+
 ## Inputs
 
 - **Rubric**: `task_implemention.toml` at the repo root. It contains `[[criteria]]` entries; each has `name`, `description`, and `guidance`. Treat the `guidance` block as the authoritative grading rule for that criterion — read it before scoring.

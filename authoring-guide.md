@@ -257,8 +257,9 @@ Use the project wrapper so the run is recorded in its Markdown report and in
 ```
 
 When Codex is selected, the wrapper's default `--docker-access auto` mode
-uses its Docker-capable sandbox so task-fixer can reach an already configured
-local Docker daemon. Make it explicit with `--docker-access on`, or use
+uses its Docker-capable sandbox so task-fixer and task-review can reach an
+already configured local Docker daemon. Make it explicit with
+`--docker-access on`, or use
 `--docker-access off` when you intentionally want static-only checks. This
 permission is for the trusted authoring checkout; it does not repair a denied
 Docker daemon or authorize an unapproved remote context.

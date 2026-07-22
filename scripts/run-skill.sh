@@ -18,7 +18,7 @@ Skills:
 Options:
   --runner codex|claude|auto  Agent CLI to use (default: auto).
   --target PATH               Explicit target path.
-  --docker-access auto|on|off Allow Codex task-fixer to reach Docker (default: auto).
+  --docker-access auto|on|off Allow Codex task-fixer/task-review to reach Docker (default: auto).
   --dry-run                   Record the command without invoking an agent.
   -h, --help                  Show this help.
 
@@ -40,7 +40,7 @@ SKILL=""
 TARGET=""
 RUNNER="${SKILL_RUNNER:-auto}"
 DRY_RUN=0
-DOCKER_ACCESS="${TASK_FIXER_DOCKER_ACCESS:-auto}"
+DOCKER_ACCESS="${SKILL_DOCKER_ACCESS:-${TASK_FIXER_DOCKER_ACCESS:-auto}}"
 
 while (($# > 0)); do
     case "$1" in
@@ -154,12 +154,12 @@ case "$RUNNER" in
 esac
 
 # A workspace-write Codex sandbox generally cannot reach the host Docker
-# socket. The task-fixer is the one local skill that must build and inspect
-# task images, so its automatic mode uses Codex's Docker-capable sandbox. This
-# does not bypass the approval policy and can be disabled explicitly when the
-# host Docker daemon is unavailable or the caller wants static-only checks.
+# socket. Task-fixer and task-review both need to inspect task images, so their
+# automatic mode uses Codex's Docker-capable sandbox. This does not bypass the
+# approval policy and can be disabled explicitly when the host Docker daemon is
+# unavailable or the caller wants static-only checks.
 CODEX_SANDBOX="workspace-write"
-if [[ "$RUNNER" = codex && "$SKILL" = task-fixer && "$DOCKER_ACCESS" != off ]]; then
+if [[ "$RUNNER" = codex && ( "$SKILL" = task-fixer || "$SKILL" = task-review ) && "$DOCKER_ACCESS" != off ]]; then
     CODEX_SANDBOX="danger-full-access"
 fi
 
@@ -452,7 +452,7 @@ each final runtime or separate verifier image must be at most 2 GB
 access to work around a bootstrap or dependency issue.
 
 Docker access mode for this invocation is ${DOCKER_ACCESS}. If this is a Codex
-task-fixer run, Docker access is provided through the wrapper's selected
+task-fixer or task-review run, Docker access is provided through the wrapper's selected
 ${CODEX_SANDBOX} sandbox; use Docker only for the target task's static image
 validation and cleanup. The skill cannot repair a host Docker daemon or grant
 access to an unapproved remote daemon.
