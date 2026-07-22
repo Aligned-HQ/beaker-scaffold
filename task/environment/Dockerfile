@@ -12,24 +12,15 @@ ENV WORKSPACE_DIR=/workspace \
 
 WORKDIR ${WORKSPACE_DIR}
 
-# Harbor's installed-agent bootstrap expects these tools. Keeping them in the
-# final stage makes its system-package step an offline no-op when needed.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        ripgrep \
-        git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Add only dependencies required by the agent-facing task, with pinned Python
-# versions. Replace this block when the real workflow needs domain packages.
-# RUN python -m pip install --no-cache-dir numpy==2.1.3 scipy==1.14.1
+# The starter solution uses only the Python standard library, so the Oracle
+# image has no package-install or network bootstrap step. When a finished task
+# needs third-party runtime packages, vendor its Linux/amd64 wheels under this
+# build context and install them with --no-index --find-links.
 
 COPY data/ ${DATA_DIR}/
 
 RUN useradd --create-home --shell /bin/bash agent \
     && mkdir -p ${WORKSPACE_DIR} ${OUTPUT_DIR} ${LOG_DIR} \
-    && chown -R agent:agent ${WORKSPACE_DIR} ${OUTPUT_DIR}
+    && chown -R agent:agent ${WORKSPACE_DIR} ${OUTPUT_DIR} ${LOG_DIR}
 
 USER agent

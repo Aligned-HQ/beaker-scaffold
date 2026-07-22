@@ -146,9 +146,10 @@ machine; task environments must still run without internet access.
     ```
 
     If `submission/` already exists, the script asks for confirmation before
-    replacing it. Packaging also checks `trajectories/summary.md` and requires
-    the average Claude/Codex/Gemini pass rate to be below 50%; Oracle is
-    ignored. Upload the resulting `submission/` directory to Workbench.
+    replacing it. Packaging checks `trajectories/summary.md` against the raw
+    per-trial results under `harbor-jobs/` and requires the average
+    Claude/Codex/Gemini pass rate to be below 50%; Oracle is ignored. Upload
+    the resulting `submission/` directory to Workbench.
 
 ## Layout
 

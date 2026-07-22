@@ -10,9 +10,12 @@ ENV WORKSPACE_DIR=/workspace \
 
 WORKDIR ${TESTS_DIR}
 
-RUN python -m pip install --no-cache-dir \
-        pytest==8.4.1 \
-        pytest-json-ctrf==0.3.5 \
+COPY wheels/ /opt/wheels/
+
+RUN python -m pip install --no-cache-dir --no-index \
+        --find-links=/opt/wheels \
+        -r /opt/wheels/requirements.txt \
+    && rm -rf /opt/wheels \
     && mkdir -p ${TESTS_DIR}/data ${OUTPUT_DIR} ${LOG_DIR}
 
 COPY data/ ${TESTS_DIR}/data/

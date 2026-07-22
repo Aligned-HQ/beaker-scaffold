@@ -329,6 +329,36 @@ extract_task_review_handoff() {
     ' "$source" > "$destination" || return $?
 }
 
+extract_trajectory_review_handoff() {
+    local source="$1"
+    local destination="$2"
+
+    awk '
+        function is_run_reviewed(line, cleaned) {
+            cleaned = line
+            sub(/^[[:space:]]*##?[[:space:]]*/, "", cleaned)
+            return tolower(cleaned) ~ /^[[:space:]]*run reviewed[[:space:]]*$/
+        }
+        {
+            lines[NR] = $0
+            if (is_run_reviewed($0)) {
+                start = NR
+            }
+        }
+        END {
+            if (!start) {
+                exit 2
+            }
+            for (line = start; line <= NR; line++) {
+                if (line > start && lines[line] ~ /^[[:space:]]*tokens used([[:space:]]|$)/) {
+                    break
+                }
+                print lines[line]
+            }
+        }
+    ' "$source" > "$destination" || return $?
+}
+
 prepare_report_outputs() {
     local source="$1"
 
@@ -338,6 +368,11 @@ prepare_report_outputs() {
             ;;
         task-review)
             if ! extract_task_review_handoff "$source" "$FINAL_OUTPUT_TMP"; then
+                extract_final_handoff "$source" "$FINAL_OUTPUT_TMP"
+            fi
+            ;;
+        trajectory-review)
+            if ! extract_trajectory_review_handoff "$source" "$FINAL_OUTPUT_TMP"; then
                 extract_final_handoff "$source" "$FINAL_OUTPUT_TMP"
             fi
             ;;
