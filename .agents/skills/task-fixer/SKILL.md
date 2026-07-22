@@ -331,6 +331,15 @@ and each reported size is at most `2000000000` bytes. If the image build or
 agent setup requires network access, record that as an external client-platform
 dependency rather than changing `allow_internet`.
 
+## Output
+
+Return a concise Markdown handoff beginning with `**Status:** PASS` when the
+repair completed successfully, or `**Status:** FAIL` when the task is blocked
+or a required repair could not be completed. Summarize the files changed, the
+checks performed, and any remaining client-policy or infrastructure blocker.
+When run through `scripts/run-task-fixer.sh`, the wrapper saves the complete
+Markdown result as `skill-reports/task-fixer.md`.
+
 ## Guardrails
 
 - Preserve the task's scientific intent and expected output schema.

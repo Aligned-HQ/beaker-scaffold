@@ -67,7 +67,14 @@ If the folder doesn't have this layout, stop and report what's missing — do no
    - `N/A` — only when the guidance explicitly permits N/A (e.g. `structured_data_schema` when no structured output is expected, `task_readme` when no README is present).
    Mark `UNKNOWN` only if you genuinely could not read a required file; never use `UNKNOWN` to avoid a judgment call.
 6. **Evidence.** Every verdict needs at least one citation in `path/to/file:line` form. For `FAIL`, also include a one-sentence fix suggestion. For `PASS`, a brief justification (1 sentence) is enough.
-7. **Write the scorecard.** Use the format below. Produce a separate markdown file, display the pass/fail summary, and the path to the scorecard file.
+7. **Write the scorecard.** Use the format below. Start the report with
+   `**Status:** PASS` only when every required criterion and client deployment
+   gate passes; otherwise start it with `**Status:** FAIL`. Produce the complete
+   scorecard in Markdown, display the pass/fail summary, and identify the
+   scorecard file when running outside the project wrapper. When run through
+   `scripts/run-task-review.sh`, the wrapper saves the Markdown result as
+   `skill-reports/task-review.md`. The final response must contain the complete
+   scorecard, not only a short summary or a path to a file.
 
 ## Scorecard format
 

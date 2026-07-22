@@ -88,7 +88,7 @@ machine; task environments must still run without internet access.
     python3 scripts/validate_scaffold.py --strict
     ```
 
-11. Before uploading, verify the skill-run audit, then upload and submit the
+11. Before uploading, verify the skill reports and status, then upload and submit the
     task on Workbench:
 
     ```bash
@@ -97,8 +97,8 @@ machine; task environments must still run without internet access.
       --trajectory trajectories/<run-id>
     ```
 
-    Keep the task files, audit log, transcripts, Harbor evidence, and trajectory
-    archive together with the submission.
+    Keep the task files, skill reports, status file, Harbor evidence, and
+    trajectory archive together with the submission.
 
 ## Layout
 
@@ -116,9 +116,12 @@ machine; task environments must still run without internet access.
 │   ├── run-task-fixer.sh              # task-fixer entrypoint
 │   ├── run-task-review.sh             # task-review entrypoint
 │   ├── run-trajectory-review.sh       # trajectory-review entrypoint
-│   └── verify-skill-runs.sh            # submission audit checker
-├── skill-runs.log                     # timestamped skill-run audit records
-├── .skill-runs/                       # captured skill transcripts
+│   └── verify-skill-runs.sh            # submission report/status checker
+├── skill-reports/                     # latest Markdown result from each skill
+│   ├── task-fixer.md
+│   ├── task-review.md
+│   └── trajectory-review.md
+├── skill-status.md                    # overwritten latest status for each skill
 ├── task/
 │   ├── README.md                      # maintainer notes for this task
 │   ├── instruction.md                 # agent-facing scientific contract
@@ -138,6 +141,14 @@ machine; task environments must still run without internet access.
 └── trajectories/
     └── README.md                      # archive contract; no fake runs
 ```
+
+## Skill reports
+
+Each skill wrapper overwrites its Markdown result in `skill-reports/`. The
+shared `skill-status.md` file is overwritten at the start and end of every run;
+the current skill is marked `Run` while active and `Pass` or `Fail` when it
+finishes. The final checker reads these reports and requires passing
+task-fixer, task-review, and trajectory-review results in order.
 
 ## Authoring boundary
 

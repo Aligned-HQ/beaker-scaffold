@@ -136,7 +136,12 @@ alongside the trajectory evidence:
 
 ## Output Format
 
-Start with the verdict:
+Start with `**Status:** PASS` when the verdict is `PASS`. Start with
+`**Status:** FAIL` when the verdict is `FAIL` or `INCONCLUSIVE`; retain the
+specific verdict below. The project wrapper saves the complete Markdown result
+as `skill-reports/trajectory-review.md`.
+
+Then start with the verdict:
 
 - `PASS`: failures are scientific.
 - `FAIL`: task needs repair before review/upload.

@@ -130,7 +130,7 @@ if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; th
     hash_command="$(command -v shasum || command -v sha256sum)"
     pass_check "Hash utility: $hash_command"
 else
-    fail_check "Hash utility: shasum or sha256sum is missing." "Install shasum or sha256sum; the skill wrappers need one to create audit records."
+    fail_check "Hash utility: shasum or sha256sum is missing." "Install shasum or sha256sum; the skill wrappers need one to record report metadata."
 fi
 
 python_version_output="$(python3 --version 2>&1 || true)"
@@ -254,10 +254,12 @@ for wrapper in \
     fi
 done
 
-if [[ -f "${REPO_ROOT}/skill-runs.log" && -w "${REPO_ROOT}/skill-runs.log" ]]; then
-    pass_check "Skill audit log is present and writable: skill-runs.log"
+skill_report_dir="${REPO_ROOT}/skill-reports"
+skill_status_file="${REPO_ROOT}/skill-status.md"
+if [[ -d "$skill_report_dir" && -w "$skill_report_dir" && -f "$skill_status_file" && -w "$skill_status_file" ]]; then
+    pass_check "Skill reports and status file are present and writable"
 else
-    fail_check "skill-runs.log is missing or not writable." "Create a writable skill-runs.log at the repository root so skill wrappers can record audit evidence."
+    fail_check "Skill reports directory or skill-status.md is missing or not writable." "Restore writable skill-reports/ and skill-status.md so skill wrappers can save Markdown results and status updates."
 fi
 
 if [[ -f "${REPO_ROOT}/scripts/validate_scaffold.py" ]]; then

@@ -22,8 +22,8 @@ Options:
   -h, --help                  Show this help.
 
 The selected runner reads the local skill file from .agents/skills/ (Codex) or
-.claude/skills/ (Claude). Successful runs are recorded in skill-runs.log and
-their transcripts are stored in .skill-runs/.
+.claude/skills/ (Claude). Each run overwrites its Markdown result in
+skill-reports/ and updates skill-status.md.
 USAGE
 }
 
@@ -160,56 +160,160 @@ sha256_file() {
 
 SKILL_SHA256="$(sha256_file "$SKILL_FILE")" || die "could not calculate the skill hash"
 
-AUDIT_LOG="${REPO_ROOT}/skill-runs.log"
-RUN_LOG_DIR="${REPO_ROOT}/.skill-runs"
-AUDIT_HEADER=$'# run_id\tstarted_at_utc\tended_at_utc\tskill\trunner\tstatus\texit_code\ttarget\tskill_sha256\toutput_log\toutput_sha256'
-mkdir -p "$RUN_LOG_DIR" || die "could not create $RUN_LOG_DIR"
-if [[ ! -e "$AUDIT_LOG" ]]; then
-    printf '%s\n' "$AUDIT_HEADER" > "$AUDIT_LOG" || die "could not create $AUDIT_LOG"
-elif [[ ! -s "$AUDIT_LOG" ]]; then
-    printf '%s\n' "$AUDIT_HEADER" >> "$AUDIT_LOG" || die "could not initialize $AUDIT_LOG"
-fi
+REPORT_DIR="${REPO_ROOT}/skill-reports"
+STATUS_FILE="${REPO_ROOT}/skill-status.md"
+REPORT_REL="skill-reports/${SKILL}.md"
+REPORT_FILE="${REPO_ROOT}/${REPORT_REL}"
+mkdir -p "$REPORT_DIR" || die "could not create $REPORT_DIR"
 
-ACTUAL_HEADER="$(head -n 1 "$AUDIT_LOG")"
-[[ "$ACTUAL_HEADER" = "$AUDIT_HEADER" ]] || die "$AUDIT_LOG has an unexpected header"
+status_row_field() {
+    local wanted="$1"
+    local field_number="$2"
+    local fallback="$3"
+    if [[ ! -f "$STATUS_FILE" ]]; then
+        printf '%s\n' "$fallback"
+        return
+    fi
+    awk -F'|' -v wanted="$wanted" -v field_number="$field_number" -v fallback="$fallback" '
+        NR > 3 {
+            name = $2
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            gsub(/`/, "", name)
+            if (name == wanted) {
+                value = $field_number
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                gsub(/`/, "", value)
+                print value
+                found = 1
+                exit
+            }
+        }
+        END {
+            if (!found) print fallback
+        }
+    ' "$STATUS_FILE"
+}
+
+write_status_file() {
+    local current_status="$1"
+    local current_time="$2"
+    local current_target="$3"
+    local status_tmp="${STATUS_FILE}.tmp.$$"
+    local skill_name
+    local row_status
+    local row_time
+    local row_target
+
+    {
+        printf '%s\n\n' '# Skill status'
+        printf '%s\n\n' 'This file is overwritten whenever a skill wrapper runs.'
+        printf '| Skill | Status | Last run (UTC) | Target | Report |\n'
+        printf '|---|---|---|---|---|\n'
+        for skill_name in task-fixer task-review trajectory-review; do
+            if [[ "$skill_name" = "$SKILL" ]]; then
+                row_status="$current_status"
+                row_time="$current_time"
+                row_target="$current_target"
+            else
+                row_status="$(status_row_field "$skill_name" 3 "Not Run")"
+                row_time="$(status_row_field "$skill_name" 4 "—")"
+                row_target="$(status_row_field "$skill_name" 5 "—")"
+            fi
+            printf '| `%s` | %s | %s | `%s` | [%s.md](skill-reports/%s.md) |\n' \
+                "$skill_name" "$row_status" "$row_time" "$row_target" \
+                "$skill_name" "$skill_name"
+        done
+    } > "$status_tmp" || {
+        rm -f "$status_tmp"
+        return 1
+    }
+    mv "$status_tmp" "$STATUS_FILE"
+}
+
+OUTPUT_TMP="$(mktemp)" || die "could not create temporary skill output file"
 
 RUN_ID="$(date -u '+%Y%m%dT%H%M%SZ')-${SKILL}-$$"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-RUN_LOG_REL=".skill-runs/${RUN_ID}.log"
-RUN_LOG="${REPO_ROOT}/${RUN_LOG_REL}"
 RUN_STATUS="FAILED"
 EXIT_CODE=1
-OUTPUT_SHA256=""
 FINALIZED=0
 
-{
-    printf '%s\n' '# Agent skill runner transcript'
-    printf 'run_id=%s\n' "$RUN_ID"
-    printf 'skill=%s\n' "$SKILL"
-    printf 'skill_file=%s\n' "$SKILL_FILE"
-    printf 'skill_sha256=%s\n' "$SKILL_SHA256"
-    printf 'runner=%s\n' "$RUNNER"
-    printf 'runner_bin=%s\n' "$RUNNER_BIN"
-    printf 'target=%s\n' "$TARGET_ABS"
-    printf 'started_at_utc=%s\n' "$STARTED_AT"
-    printf 'network_policy=offline task execution; no live services or downloads\n'
-    printf '\n'
-} > "$RUN_LOG" || die "could not create $RUN_LOG"
+write_status_file "Run" "$STARTED_AT" "$TARGET_REL" || die "could not update $STATUS_FILE"
+
+skill_result_status() {
+    if [[ "$RUN_STATUS" = "DRY_RUN" ]]; then
+        printf '%s\n' 'Run'
+        return
+    fi
+    if ((EXIT_CODE != 0)); then
+        printf '%s\n' 'Fail'
+        return
+    fi
+    if sed -n '1,100p' "$OUTPUT_TMP" | grep -Eiq \
+        '^[[:space:]]*\*\*(Status|Verdict)\*\*:[[:space:]]*PASS([[:space:]]|$)'; then
+        printf '%s\n' 'Pass'
+    elif sed -n '1,100p' "$OUTPUT_TMP" | grep -Eiq \
+        '^[[:space:]]*\*\*(Status|Verdict)\*\*:[[:space:]]*(FAIL|INCONCLUSIVE)([[:space:]]|$)'; then
+        printf '%s\n' 'Fail'
+    else
+        printf '%s\n' 'Pass'
+    fi
+}
+
+write_report() {
+    local result_status="$1"
+    local ended_at="$2"
+    local output_sha256="$3"
+    local report_tmp="${REPORT_FILE}.tmp.$$"
+    {
+        printf '# Skill report: %s\n\n' "$SKILL"
+        printf '**Status:** %s\n\n' "$result_status"
+        printf '| Field | Value |\n'
+        printf '|---|---|\n'
+        printf '| Run ID | `%s` |\n' "$RUN_ID"
+        printf '| Skill | `%s` |\n' "$SKILL"
+        printf '| Runner | `%s` |\n' "$RUNNER"
+        printf '| Target | `%s` |\n' "$TARGET_REL"
+        printf '| Started (UTC) | `%s` |\n' "$STARTED_AT"
+        printf '| Finished (UTC) | `%s` |\n' "$ended_at"
+        printf '| Exit code | `%s` |\n' "$EXIT_CODE"
+        printf '| Skill SHA-256 | `%s` |\n' "$SKILL_SHA256"
+        printf '| Agent output SHA-256 | `%s` |\n' "$output_sha256"
+        printf '\n## Agent output\n\n'
+        if [[ -s "$OUTPUT_TMP" ]]; then
+            cat "$OUTPUT_TMP"
+            printf '\n'
+        else
+            printf '_The agent produced no output._\n'
+        fi
+    } > "$report_tmp" || {
+        rm -f "$report_tmp"
+        return 1
+    }
+    mv "$report_tmp" "$REPORT_FILE"
+}
 
 finalize() {
     local ended_at
+    local result_status
+    local output_sha256
     if ((FINALIZED)); then
         return
     fi
     FINALIZED=1
     ended_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    OUTPUT_SHA256="$(sha256_file "$RUN_LOG" 2>/dev/null || true)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$RUN_ID" "$STARTED_AT" "$ended_at" "$SKILL" "$RUNNER" \
-        "$RUN_STATUS" "$EXIT_CODE" "$TARGET_REL" "$SKILL_SHA256" \
-        "$RUN_LOG_REL" "$OUTPUT_SHA256" >> "$AUDIT_LOG"
-    printf '\nAudit record: %s\n' "$AUDIT_LOG" >&2
-    printf 'Transcript: %s\n' "$RUN_LOG" >&2
+    result_status="$(skill_result_status)"
+    output_sha256="$(sha256_file "$OUTPUT_TMP" 2>/dev/null || true)"
+    if ! write_report "$result_status" "$ended_at" "$output_sha256"; then
+        printf 'ERROR: could not write skill report: %s\n' "$REPORT_FILE" >&2
+        result_status="Fail"
+    fi
+    if ! write_status_file "$result_status" "$ended_at" "$TARGET_REL"; then
+        printf 'ERROR: could not update skill status: %s\n' "$STATUS_FILE" >&2
+    fi
+    rm -f "$OUTPUT_TMP"
+    printf '\nReport: %s\n' "$REPORT_FILE" >&2
+    printf 'Status: %s\n' "$result_status" >&2
 }
 trap finalize EXIT
 trap 'RUN_STATUS=INTERRUPTED; EXIT_CODE=130; exit 130' INT TERM
@@ -230,19 +334,17 @@ access to work around a bootstrap or dependency issue.
 
 Use the skill's required workflow and evidence rules. For task-fixer, make the
 smallest task-local edits needed. For task-review and trajectory-review, do not
-edit the task; return the requested scorecard or verdict. Do not modify
-skill-runs.log or .skill-runs/; the wrapper records the audit entry.
+edit the task; return the complete requested scorecard or verdict as Markdown,
+not only a summary or a file path. Start the final response with the exact
+Markdown line **Status:** PASS when the skill passes and **Status:** FAIL when
+it does not.
+Do not modify skill-reports/ or skill-status.md; the wrapper saves your final
+Markdown output and updates those files.
 EOF
 )
 
-{
-    printf 'prompt_target=%s\n' "$TARGET_ABS"
-    printf 'invocation=non-interactive %s\n' "$RUNNER"
-    printf 'skill_invocation_started_at_utc=%s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-} >> "$RUN_LOG"
-
 if ((DRY_RUN)); then
-    printf 'DRY RUN: would invoke %s for %s on %s\n' "$RUNNER" "$SKILL" "$TARGET_ABS" | tee -a "$RUN_LOG"
+    printf 'DRY RUN: would invoke %s for %s on %s\n' "$RUNNER" "$SKILL" "$TARGET_ABS" | tee "$OUTPUT_TMP"
     RUN_STATUS=DRY_RUN
     EXIT_CODE=0
     exit 0
@@ -255,7 +357,7 @@ if [[ "$RUNNER" = codex ]]; then
         -C "$REPO_ROOT" \
         --sandbox workspace-write \
         --skip-git-repo-check \
-        "$PROMPT" 2>&1 | tee -a "$RUN_LOG"
+        "$PROMPT" 2>&1 | tee "$OUTPUT_TMP"
     EXIT_CODE=${PIPESTATUS[0]}
 else
     (
@@ -266,12 +368,17 @@ else
             --permission-mode acceptEdits \
             --add-dir "$REPO_ROOT" \
             "$PROMPT"
-    ) 2>&1 | tee -a "$RUN_LOG"
+    ) 2>&1 | tee "$OUTPUT_TMP"
     EXIT_CODE=${PIPESTATUS[0]}
 fi
 
 if ((EXIT_CODE == 0)); then
     RUN_STATUS=COMPLETED
+    RESULT_STATUS="$(skill_result_status)"
+    if [[ "$RESULT_STATUS" = "Fail" ]]; then
+        EXIT_CODE=1
+        RUN_STATUS=FAIL
+    fi
 else
     RUN_STATUS=FAIL
 fi

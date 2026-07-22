@@ -45,8 +45,8 @@ git clone https://github.com/Aligned-HQ/beaker-scaffold.git <task-project>
 cd <task-project>
 ```
 
-Keep the task in its own checkout. The skill wrappers, audit log, transcripts,
-Harbor evidence, and trajectory archive are all part of the handoff.
+Keep the task in its own checkout. The skill wrappers, Markdown reports, status
+file, Harbor evidence, and trajectory archive are all part of the handoff.
 
 ## 2. Check the local authoring toolchain
 
@@ -60,7 +60,7 @@ It checks Python 3.11+, Git, make, ripgrep, hashing utilities, Claude Code or
 Codex, Harbor, Docker and its reachable daemon, the vendored
 `harbor_runner.py` and its local Docker smoke mode, the project-level
 `task_implemention.toml` rubric, the mirrored skills, the skill wrappers, the
-audit log, and the non-strict scaffold contract. It does not install software,
+skill report directory and status file, and the non-strict scaffold contract. It does not install software,
 build images, authenticate services, or make network calls.
 
 The Harbor runner, Docker smoke test, and task-review rubric are part of this
@@ -244,7 +244,8 @@ reviewability issues:
 - verifier installs or missing reward handling;
 - leaked task-local `.claude/`, `.agents/`, `task_implementation.toml`, caches, or `.DS_Store` files.
 
-Use the project wrapper so the run is recorded in the audit log:
+Use the project wrapper so the run is recorded in its Markdown report and in
+`skill-status.md`:
 
 ```bash
 ./scripts/run-task-fixer.sh task
@@ -276,11 +277,13 @@ evidence and rerun the review. Repeat until the task passes. If an edit affects
 paths, dependencies, Docker build contexts, users, artifacts, or reward
 handling, rerun `task-fixer` before running `task-review` again.
 
-The wrappers record UTC timestamps, the exact local skill revision, runner, exit
-status, and hashes for captured transcripts in `skill-runs.log`. The eventual
-submission check requires successful fixer → review → trajectory-review runs in
-that order. This is compliance evidence rather than a tamper-proof signature,
-so keep the transcript directory and inspect the final diff before upload.
+Each wrapper overwrites its Markdown result in `skill-reports/` and updates the
+single `skill-status.md` file. The status is `Run` while the skill is executing,
+then `Pass` or `Fail` when it finishes. Reports include the UTC timestamps,
+runner, target, skill revision hash, exit code, and captured Markdown output. The
+submission check requires passing fixer → review → trajectory-review reports in
+that order. These files are compliance evidence rather than a tamper-proof
+signature, so inspect the final reports and diff before upload.
 
 Do not treat an Oracle pass as proof that the task is good. The reference
 solution can pass a broken verifier.
@@ -365,7 +368,7 @@ in deterministic generator. Resolve every failure before handoff.
 
 ## 11. Upload and submit on Workbench
 
-Before uploading, verify the skill-run audit:
+Before uploading, verify the skill reports and status:
 
 ```bash
 ./scripts/verify-skill-runs.sh \
@@ -375,6 +378,7 @@ Before uploading, verify the skill-run audit:
 
 Remove generated caches, check that all intended inputs are tracked, and
 inspect the final diff. The project should read coherently from prompt to
-solution process to verifier to trajectory evidence. Then upload and submit the
-task on Workbench. If a non-specialist cannot tell what a successful result
-means, improve the task README and metadata rather than adding more test code.
+solution process to verifier to trajectory evidence. Keep `skill-reports/*.md`
+and `skill-status.md` with the submission. Then upload and submit the task on
+Workbench. If a non-specialist cannot tell what a successful result means,
+improve the task README and metadata rather than adding more test code.
