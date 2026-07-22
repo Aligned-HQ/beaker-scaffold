@@ -62,6 +62,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -119,6 +120,7 @@ REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
 REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
+ORACLE_SPINNER_FRAMES = ("|", "/", "-", "\\")
 REMOTE_AGENT_CONFIGS = {
     ("claude-code", "anthropic/claude-opus-4-7"): "claude-opus",
     ("codex", "openai/gpt-5.5"): "codex-gpt-5-5",
@@ -655,11 +657,37 @@ def remote_count(value: object) -> int:
         return 0
 
 
-def remote_progress_signature(status: dict[str, object]) -> tuple[object, ...]:
+def ordered_remote_agents(
+    agents: list[object],
+    agent_order: tuple[str, ...] | None = None,
+) -> list[object]:
+    if not agent_order:
+        return agents
+    positions = {agent_id: index for index, agent_id in enumerate(agent_order)}
+    return [
+        agent
+        for _index, agent in sorted(
+            enumerate(agents),
+            key=lambda item: (
+                positions.get(
+                    str(item[1].get("id")) if isinstance(item[1], dict) else "",
+                    len(positions),
+                ),
+                item[0],
+            ),
+        )
+    ]
+
+
+def remote_progress_signature(
+    status: dict[str, object],
+    *,
+    agent_order: tuple[str, ...] | None = None,
+) -> tuple[object, ...]:
     state = status.get("state")
     agents = status.get("agents") if isinstance(status.get("agents"), list) else []
     signature_parts: list[object] = [state]
-    for agent in agents:
+    for agent in ordered_remote_agents(agents, agent_order):
         if not isinstance(agent, dict):
             continue
         signature_parts.extend((
@@ -690,9 +718,10 @@ def print_remote_progress(
     *,
     elapsed_sec: float = 0.0,
     force: bool = False,
+    agent_order: tuple[str, ...] | None = None,
 ) -> tuple[object, ...]:
     state = status.get("state")
-    signature = remote_progress_signature(status)
+    signature = remote_progress_signature(status, agent_order=agent_order)
     changed = signature != previous
     if changed or force:
         label = "remote state" if changed else "remote heartbeat"
@@ -725,7 +754,7 @@ def print_remote_progress(
         total_passed = 0
         total_failed = 0
         total_exceptions = 0
-        for agent in agents:
+        for agent in ordered_remote_agents(agents, agent_order):
             if not isinstance(agent, dict):
                 continue
             expected = remote_count(agent.get("expected_trials"))
@@ -780,6 +809,7 @@ def poll_remote_status(
     minimum_delay: float,
     maximum_delay: float,
     progress_interval: float,
+    agent_order: tuple[str, ...] | None,
     state_path: Path,
     state: dict[str, object],
 ) -> dict[str, object]:
@@ -815,6 +845,7 @@ def poll_remote_status(
                     previous_signature,
                     elapsed_sec=now - started,
                     force=True,
+                    agent_order=agent_order,
                 )
                 last_announcement = now
             time.sleep(remote_retry_after(response_headers, delay))
@@ -823,7 +854,7 @@ def poll_remote_status(
         etag = response_headers.get("etag", etag)
         last_status = status
         now = time.monotonic()
-        signature = remote_progress_signature(status)
+        signature = remote_progress_signature(status, agent_order=agent_order)
         should_announce = (
             previous_signature is None
             or signature != previous_signature
@@ -834,6 +865,7 @@ def poll_remote_status(
             previous_signature,
             elapsed_sec=now - started,
             force=should_announce,
+            agent_order=agent_order,
         )
         if should_announce:
             last_announcement = now
@@ -1022,7 +1054,11 @@ def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> i
     return 5
 
 
-def print_remote_results(results: dict[str, object]) -> None:
+def print_remote_results(
+    results: dict[str, object],
+    *,
+    agent_order: tuple[str, ...] | None = None,
+) -> None:
     oracle = results.get("oracle") if isinstance(results.get("oracle"), dict) else {}
     oracle_text = f"oracle: {oracle.get('verdict', 'INCOMPLETE')}"
     if oracle.get("reward") is not None:
@@ -1052,7 +1088,15 @@ def print_remote_results(results: dict[str, object]) -> None:
         counts = by_agent.setdefault(agent_id, {"PASS": 0, "FAIL": 0, "EXCEPTION": 0, "INCOMPLETE": 0})
         verdict = str(trial.get("verdict") or "INCOMPLETE")
         counts[verdict] = counts.get(verdict, 0) + 1
-    for agent_id, counts in by_agent.items():
+    ordered_ids = sorted(
+        by_agent,
+        key=lambda agent_id: (
+            agent_order.index(agent_id) if agent_order and agent_id in agent_order else len(agent_order or ()),
+            agent_id,
+        ),
+    )
+    for agent_id in ordered_ids:
+        counts = by_agent[agent_id]
         print(
             f"  {agent_id}: {counts.get('PASS', 0)} pass, "
             f"{counts.get('FAIL', 0)} fail, "
@@ -1092,10 +1136,13 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             raise RemoteInputError("--remote-progress-interval-sec must be positive")
         base = remote_service_base(args.service_url)
         agents = remote_agent_payload(args)
+        agent_order = tuple(str(agent["id"]) for agent in agents)
         jobs_dir = args.jobs_dir.resolve()
         local_id = args.run_id
         request_path = remote_request_state_path(jobs_dir, local_id)
         state = load_remote_state(request_path) or {}
+        if not args.resume and not state:
+            clear_harbor_jobs_dir(jobs_dir)
         run_id = state.get("run_id") if isinstance(state.get("run_id"), str) else None
         service_run_path: Path | None = None
 
@@ -1252,6 +1299,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             minimum_delay=max(0.25, args.remote_poll_min),
             maximum_delay=max(args.remote_poll_min, args.remote_poll_max),
             progress_interval=args.remote_progress_interval_sec,
+            agent_order=agent_order,
             state_path=service_run_path,
             state=state,
         )
@@ -1264,7 +1312,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         _, results, _ = remote_json_request(
             "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/results"), token
         )
-        print_remote_results(results)
+        print_remote_results(results, agent_order=agent_order)
         manifest: dict[str, object] | None = None
         print("remote archive: waiting for the trajectory manifest", flush=True)
         for attempt in range(20):
@@ -1461,6 +1509,36 @@ def parse_key_value(raw: str, flag: str) -> tuple[str, str]:
 def require_executable(name: str) -> None:
     if shutil.which(name) is None:
         raise SystemExit(f"error: required executable not found on PATH: {name}")
+
+
+def clear_harbor_jobs_dir(jobs_dir: Path) -> None:
+    """Remove prior local Harbor output before starting a fresh run.
+
+    The caller must pass the explicitly configured jobs directory. Guard the
+    broadest accidental targets, then remove only its immediate children so a
+    typo cannot turn into a recursive delete of a parent directory.
+    """
+    resolved = jobs_dir.expanduser().resolve()
+    forbidden = {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}
+    if resolved in forbidden:
+        raise SystemExit(
+            f"error: refusing to clear unsafe Harbor jobs directory: {resolved}"
+        )
+    if resolved.exists() and not resolved.is_dir():
+        raise SystemExit(f"error: Harbor jobs path is not a directory: {resolved}")
+
+    resolved.mkdir(parents=True, exist_ok=True)
+    children = list(resolved.iterdir())
+    print(
+        f"clearing Harbor jobs directory: {resolved} "
+        f"({len(children)} existing item(s))",
+        flush=True,
+    )
+    for child in children:
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
 
 
 def load_toml(path: Path) -> dict:
@@ -2193,31 +2271,30 @@ def format_job_progress(spec: JobSpec, progress: JobProgress) -> str:
 
 
 class ProgressReporter:
-    def __init__(self, specs: list[JobSpec]) -> None:
-        self._active_job_names = {spec.job_name for spec in specs}
-        self._seen_job_names: set[str] = set()
+    """Render a stable, ordered scoreboard for concurrent agent jobs."""
+
+    def __init__(self, specs: list[JobSpec], stream: object | None = None) -> None:
+        self._specs = tuple(specs)
+        self._latest: dict[str, str] = {}
+        self._stream = stream if stream is not None else sys.stdout
         self._lock = threading.Lock()
 
     def report(self, spec: JobSpec, line: str) -> None:
         with self._lock:
-            print(line, flush=True)
-            self._seen_job_names.add(spec.job_name)
-            self._maybe_print_separator()
+            self._latest[spec.job_name] = line
+            self._render()
 
     def complete(self, spec: JobSpec) -> None:
         with self._lock:
-            self._active_job_names.discard(spec.job_name)
-            self._seen_job_names.discard(spec.job_name)
-            self._maybe_print_separator()
+            self._latest[spec.job_name] = "completed; collecting the final job result"
+            self._render()
 
-    def _maybe_print_separator(self) -> None:
-        if (
-            self._active_job_names
-            and self._seen_job_names
-            and self._active_job_names.issubset(self._seen_job_names)
-        ):
-            print("=============", flush=True)
-            self._seen_job_names.clear()
+    def _render(self) -> None:
+        print("agent progress update:", file=self._stream, flush=True)
+        for spec in self._specs:
+            line = self._latest.get(spec.job_name, f"waiting for {spec.label} to start")
+            print(f"  {spec.label}: {line}", file=self._stream, flush=True)
+        print("=============", file=self._stream, flush=True)
 
 
 def run_job(
@@ -2353,6 +2430,8 @@ def run_oracle_sort_job(
     completed_since: float | None = None
     started = time.time()
     next_progress_at = started
+    progress_enabled = spec.progress_interval_sec > 0
+    progress_display = OracleProgressDisplay()
     with spec.runner_log.open(mode, encoding="utf-8") as log:
         log.write(f"\n$ {redacted_command(spec.command)}\n\n")
         log.flush()
@@ -2368,6 +2447,8 @@ def run_oracle_sort_job(
             f"Oracle job started: {spec.job_name}; expecting {spec.num_tasks} result(s)",
             flush=True,
         )
+        if progress_enabled:
+            progress_display.update(format_oracle_progress(spec, started))
         with PROCESS_LOCK:
             RUNNING_PROCESSES[spec.job_name] = process
         try:
@@ -2377,18 +2458,25 @@ def run_oracle_sort_job(
                     break
                 except subprocess.TimeoutExpired:
                     now = time.time()
+                    if progress_enabled:
+                        progress_display.prepare_for_external_output()
                     if on_poll is not None:
                         try:
                             on_poll()
                         except Exception as exc:
                             log.write(f"incremental sort hook failed: {exc!r}\n")
                             log.flush()
+                    progress_line: str | None = None
+                    if progress_enabled and progress_display.is_tty:
+                        progress_line = format_oracle_progress(spec, started)
+                        progress_display.update(progress_line)
                     if (
                         spec.progress_interval_sec > 0
                         and now >= next_progress_at
                     ):
-                        line = format_oracle_progress(spec, started)
-                        print(line, flush=True)
+                        line = progress_line or format_oracle_progress(spec, started)
+                        if not progress_display.is_tty:
+                            print(line, flush=True)
                         log.write(line + "\n")
                         log.flush()
                         next_progress_at = now + spec.progress_interval_sec
@@ -2436,6 +2524,7 @@ def run_oracle_sort_job(
         finally:
             with PROCESS_LOCK:
                 RUNNING_PROCESSES.pop(spec.job_name, None)
+            progress_display.finish()
     return returncode
 
 
@@ -2466,6 +2555,47 @@ def format_oracle_progress(spec: OracleSortJobSpec, started_at: float) -> str:
         f"rewarded {passed}, not rewarded {failed}, exceptions {exceptions}, "
         f"elapsed {format_elapsed(time.time() - started_at)}"
     )
+
+
+class OracleProgressDisplay:
+    """Show a live Oracle spinner on terminals without polluting redirected logs."""
+
+    def __init__(self, stream: object | None = None) -> None:
+        self.stream = stream if stream is not None else sys.stdout
+        isatty = getattr(self.stream, "isatty", None)
+        self.is_tty = bool(isatty()) if callable(isatty) else False
+        self.frame = 0
+        self.active = False
+
+    def update(self, progress_line: str) -> None:
+        if not self.is_tty:
+            return
+        frame = ORACLE_SPINNER_FRAMES[self.frame % len(ORACLE_SPINNER_FRAMES)]
+        self.frame += 1
+        detail = progress_line.removeprefix("Oracle ")
+        print(
+            f"\r\033[KOracle [{frame}] {detail}",
+            file=self.stream,
+            end="",
+            flush=True,
+        )
+        self.active = True
+
+    def prepare_for_external_output(self) -> None:
+        if not self.active:
+            return
+        self._clear_line()
+        self.active = False
+
+    def finish(self) -> None:
+        if not self.active:
+            return
+        self._clear_line()
+        print("", file=self.stream, flush=True)
+        self.active = False
+
+    def _clear_line(self) -> None:
+        print("\r\033[K", file=self.stream, end="", flush=True)
 
 
 def job_result_from_spec(spec: JobSpec, returncode: int, elapsed_sec: float = 0.0) -> JobResult:
@@ -2568,8 +2698,7 @@ def should_shutdown_modal(args: argparse.Namespace) -> bool:
 
 
 def run_all(specs: list[JobSpec], local_concurrency: int) -> tuple[list[JobResult], bool]:
-    results: list[JobResult] = []
-    total = len(specs)
+    results_by_job: dict[str, JobResult] = {}
     interrupted = False
     progress_reporter = ProgressReporter(specs)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=local_concurrency)
@@ -2585,36 +2714,45 @@ def run_all(specs: list[JobSpec], local_concurrency: int) -> tuple[list[JobResul
                 result = job_result_from_spec(spec, returncode=2)
                 spec.jobs_dir.mkdir(parents=True, exist_ok=True)
                 spec.runner_log.write_text(
-                    f"runner exception: {exc!r}\n", encoding="utf-8"
+                    "runner exception:\n"
+                    f"{traceback.format_exc()}\n",
+                    encoding="utf-8",
                 )
-            results.append(result)
-            status = "ok" if result.returncode == 0 else f"exit {result.returncode}"
-            print(
-                f"[{index}/{total}] {status}: {spec.label} "
-                f"({spec.repeats} attempts for one task, "
-                f"-n {spec.n_concurrent}) {result.elapsed_sec:.1f}s",
-                flush=True,
-            )
+                progress_reporter.report(
+                    spec,
+                    f"exception; details written to {spec.runner_log}",
+                )
+            results_by_job[spec.job_name] = result
     except KeyboardInterrupt:
         interrupted = True
         print("\ninterrupt: stopping local Harbor jobs and archiving completed tasks", flush=True)
         terminate_running_jobs()
         concurrent.futures.wait(future_to_spec, timeout=20)
-        completed_specs = {future_to_spec[future].job_name for future in future_to_spec if future.done()}
         for future, spec in future_to_spec.items():
+            if spec.job_name in results_by_job:
+                continue
             if future.done():
-                if any(result.job_name == spec.job_name for result in results):
-                    continue
                 try:
-                    results.append(future.result())
+                    results_by_job[spec.job_name] = future.result()
                 except Exception:
-                    results.append(job_result_from_spec(spec, returncode=2))
-            elif not future.cancel():
-                results.append(job_result_from_spec(spec, returncode=-130))
-            elif spec.job_name not in completed_specs:
-                results.append(job_result_from_spec(spec, returncode=-130))
+                    results_by_job[spec.job_name] = job_result_from_spec(spec, returncode=2)
+            else:
+                future.cancel()
+                results_by_job[spec.job_name] = job_result_from_spec(spec, returncode=-130)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+    results = [
+        results_by_job.get(spec.job_name, job_result_from_spec(spec, returncode=-130))
+        for spec in specs
+    ]
+    for index, (spec, result) in enumerate(zip(specs, results), 1):
+        status = "ok" if result.returncode == 0 else f"exit {result.returncode}"
+        print(
+            f"[{index}/{len(specs)}] {status}: {spec.label} "
+            f"({spec.repeats} attempts for one task, "
+            f"-n {spec.n_concurrent}) {result.elapsed_sec:.1f}s",
+            flush=True,
+        )
     return results, interrupted
 
 
@@ -2654,7 +2792,37 @@ def task_path_from_trial_result(result: dict, result_path: Path) -> Path | None:
     return None
 
 
-def collect_trial_archives(results: list[JobResult]) -> dict[Path, list[TrialArchive]]:
+def canonical_task_path(
+    task_path: Path,
+    requested_tasks: list[Path] | tuple[Path, ...] | None,
+) -> Path:
+    """Map Harbor snapshot paths back to the task path supplied to the runner.
+
+    Harbor records the task path it actually executed. Normal runs use an
+    immutable Oracle or agent snapshot, so that path intentionally differs
+    from the author's task directory. This runner currently accepts one task;
+    when that is the case, the supplied task is the unambiguous archive target.
+    Name matching remains useful for callers that provide several task paths.
+    """
+    resolved = task_path.resolve()
+    if not requested_tasks:
+        return resolved
+
+    candidates = tuple(task.resolve() for task in requested_tasks)
+    if resolved in candidates:
+        return resolved
+    named = tuple(task for task in candidates if task.name == resolved.name)
+    if len(named) == 1:
+        return named[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return resolved
+
+
+def collect_trial_archives(
+    results: list[JobResult],
+    tasks: list[Path] | tuple[Path, ...] | None = None,
+) -> dict[Path, list[TrialArchive]]:
     archives_by_task: dict[Path, list[TrialArchive]] = {}
     result_by_job = {result.job_name: result for result in results}
     for result in results:
@@ -2667,9 +2835,10 @@ def collect_trial_archives(results: list[JobResult]) -> dict[Path, list[TrialArc
             except (json.JSONDecodeError, ValueError) as exc:
                 raise SystemExit(f"error: failed to read trial result {result_path}: {exc}")
 
-            task_path = task_path_from_trial_result(trial_result, result_path)
-            if task_path is None:
+            trial_task_path = task_path_from_trial_result(trial_result, result_path)
+            if trial_task_path is None:
                 raise SystemExit(f"error: could not find task path for {result_path}")
+            task_path = canonical_task_path(trial_task_path, tasks)
 
             archive = TrialArchive(
                 job_name=result.job_name,
@@ -2709,7 +2878,10 @@ def exception_type(trial_result: dict) -> str | None:
     return str(value) if value else "Exception"
 
 
-def collect_oracle_trial_results(job_dir: Path) -> dict[Path, OracleTrialResult]:
+def collect_oracle_trial_results(
+    job_dir: Path,
+    tasks: list[Path] | tuple[Path, ...] | None = None,
+) -> dict[Path, OracleTrialResult]:
     results: dict[Path, OracleTrialResult] = {}
     for result_path in sorted(job_dir.glob("*/result.json")):
         try:
@@ -2717,9 +2889,10 @@ def collect_oracle_trial_results(job_dir: Path) -> dict[Path, OracleTrialResult]
         except (json.JSONDecodeError, ValueError) as exc:
             raise SystemExit(f"error: failed to read trial result {result_path}: {exc}")
 
-        task_path = task_path_from_trial_result(trial_result, result_path)
-        if task_path is None:
+        trial_task_path = task_path_from_trial_result(trial_result, result_path)
+        if trial_task_path is None:
             raise SystemExit(f"error: could not find task path for {result_path}")
+        task_path = canonical_task_path(trial_task_path, tasks)
 
         candidate = OracleTrialResult(
             task_path=task_path,
@@ -2751,7 +2924,10 @@ def job_dir_has_oracle_agent(job_dir: Path) -> bool:
     return any(isinstance(agent, dict) and agent.get("name") == "oracle" for agent in agents)
 
 
-def collect_latest_oracle_archives(jobs_dir: Path) -> dict[Path, OracleArchive]:
+def collect_latest_oracle_archives(
+    jobs_dir: Path,
+    tasks: list[Path] | tuple[Path, ...] | None = None,
+) -> dict[Path, OracleArchive]:
     archives: dict[Path, OracleArchive] = {}
     if not jobs_dir.is_dir():
         return archives
@@ -2765,9 +2941,10 @@ def collect_latest_oracle_archives(jobs_dir: Path) -> dict[Path, OracleArchive]:
             except (json.JSONDecodeError, ValueError) as exc:
                 raise SystemExit(f"error: failed to read oracle result {result_path}: {exc}")
 
-            task_path = task_path_from_trial_result(trial_result, result_path)
-            if task_path is None:
+            trial_task_path = task_path_from_trial_result(trial_result, result_path)
+            if trial_task_path is None:
                 raise SystemExit(f"error: could not find task path for {result_path}")
+            task_path = canonical_task_path(trial_task_path, tasks)
 
             candidate = OracleArchive(
                 task_path=task_path,
@@ -2814,7 +2991,7 @@ def sort_finished_oracle_tasks(
     never disturbed. Task names moved here are recorded in ``moved_names`` so the
     final sweep in sort_oracle_tasks skips them.
     """
-    trial_results = collect_oracle_trial_results(job.job_dir)
+    trial_results = collect_oracle_trial_results(job.job_dir, tasks)
     trial_results_by_name = {path.name: result for path, result in trial_results.items()}
     moved: list[OracleSortMoveResult] = []
     for task in tasks:
@@ -2874,7 +3051,7 @@ def sort_oracle_tasks(
     moved_names: set[str] | None = None,
 ) -> list[OracleSortMoveResult]:
     moved_names = moved_names if moved_names is not None else set()
-    trial_results = collect_oracle_trial_results(job.job_dir)
+    trial_results = collect_oracle_trial_results(job.job_dir, tasks)
     trial_results_by_name = {path.name: result for path, result in trial_results.items()}
     results: list[OracleSortMoveResult] = []
     for task in tasks:
@@ -3070,7 +3247,7 @@ def write_markdown_summary(
 ) -> Path:
     jobs_dir.mkdir(parents=True, exist_ok=True)
     summary_path = jobs_dir / f"{run_id}.summary.md"
-    archives_by_task = collect_trial_archives(results)
+    archives_by_task = collect_trial_archives(results, tasks)
     archives_by_task_name: dict[str, list[TrialArchive]] = {}
     for task_path, archives in archives_by_task.items():
         archives_by_task_name.setdefault(task_path.name, []).extend(archives)
@@ -3139,11 +3316,11 @@ def archive_completed_task_runs(
     destination_root = destination_root.resolve()
     run_archive_dir = destination_root / run_id
     task_set = {task.resolve() for task in tasks}
-    archives_by_task = collect_trial_archives(results)
+    archives_by_task = collect_trial_archives(results, tasks)
     archives_by_task_name: dict[str, list[TrialArchive]] = {}
     for task_path, archives in archives_by_task.items():
         archives_by_task_name.setdefault(task_path.name, []).extend(archives)
-    latest_oracles = collect_latest_oracle_archives(summary_path.parent)
+    latest_oracles = collect_latest_oracle_archives(summary_path.parent, tasks)
     latest_oracles_by_name: dict[str, OracleArchive] = {}
     for oracle in latest_oracles.values():
         existing = latest_oracles_by_name.get(oracle.task_path.name)
@@ -3312,7 +3489,7 @@ def evaluate_oracle_gate(
     pass_threshold: float,
 ) -> tuple[bool, list[dict[str, object]]]:
     """Evaluate one Oracle trial per task without trusting Harbor's exit code."""
-    oracle_results = collect_oracle_trial_results(job.job_dir)
+    oracle_results = collect_oracle_trial_results(job.job_dir, tasks)
     by_name: dict[str, list[OracleTrialResult]] = {}
     for result in oracle_results.values():
         by_name.setdefault(result.task_path.name, []).append(result)
@@ -3511,7 +3688,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume existing jobs for --run-id via `harbor jobs resume` instead of starting new ones.",
+        help=(
+            "Resume existing jobs for --run-id via `harbor jobs resume` instead "
+            "of clearing the jobs directory and starting new ones."
+        ),
     )
     parser.add_argument(
         "--env-file",
@@ -3640,7 +3820,7 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help=(
             "Do not start Harbor jobs. Scan existing job directories for --run-id, "
-            "archive completed task runs, and move completed tasks."
+            "archive completed task runs, and move completed tasks without clearing them."
         ),
     )
     parser.add_argument(
@@ -3772,6 +3952,8 @@ def main(argv: list[str]) -> int:
 
     num_tasks = 1
     jobs_dir = args.jobs_dir.resolve()
+    if not args.resume and not args.archive_only and not args.dry_run:
+        clear_harbor_jobs_dir(jobs_dir)
     manifest_path, modal_app_name = resolve_modal_run_identity(
         jobs_dir,
         args.run_id,
@@ -3994,6 +4176,7 @@ def main(argv: list[str]) -> int:
                 cleanup_modal_for_args(args)
         else:
             cleanup_modal_for_args(args)
+        print(f"run result: summary document: {markdown_summary_path}")
         return 0
 
     print()
@@ -4033,6 +4216,10 @@ def main(argv: list[str]) -> int:
                 "Oracle gate FAILED: every task must finish with "
                 f"reward >= {args.pass_threshold}; agent jobs were not started"
             )
+        if oracle_returncode != 0:
+            print(f"run result: exception details: {oracle_job.runner_log}")
+        else:
+            print(f"run result: Oracle summary: {oracle_summary_path}")
         cleanup_modal_for_args(args)
         return 1
 
@@ -4073,6 +4260,10 @@ def main(argv: list[str]) -> int:
             cleanup_modal_for_args(args)
     else:
         cleanup_modal_for_args(args)
+    if failed:
+        print(f"run result: failure/exception details: {failed[0].runner_log}")
+    else:
+        print(f"run result: summary document: {markdown_summary_path}")
     if interrupted:
         return 130
     if failed:

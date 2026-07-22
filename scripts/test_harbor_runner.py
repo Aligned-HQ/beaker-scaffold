@@ -6,6 +6,7 @@ import re
 import sys
 import io
 import contextlib
+import json
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -80,6 +81,62 @@ def check_cleanup_is_targeted() -> None:
     assert sdk_calls == ["beaker-owned-run"]
 
 
+def check_jobs_dir_is_cleared_for_new_runs() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-jobs-cleanup-test-") as raw:
+        jobs_dir = Path(raw) / "harbor-jobs"
+        jobs_dir.mkdir()
+        (jobs_dir / "old-run.log").write_text("old", encoding="utf-8")
+        nested = jobs_dir / "old-job"
+        nested.mkdir()
+        (nested / "result.json").write_text("{}", encoding="utf-8")
+        symlink = jobs_dir / "old-link"
+        symlink.symlink_to(jobs_dir / "old-run.log")
+
+        harbor_runner.clear_harbor_jobs_dir(jobs_dir)
+
+        assert list(jobs_dir.iterdir()) == []
+
+
+def check_snapshot_results_map_to_original_task() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-archive-mapping-test-") as raw:
+        root = Path(raw)
+        original_task = root / "task"
+        original_task.mkdir()
+        jobs_dir = root / "harbor-jobs"
+        job_dir = jobs_dir / "run-claude-opus"
+        trial_dir = job_dir / "run.agent__trial"
+        trial_dir.mkdir(parents=True)
+        snapshot = jobs_dir / "run.agent-task-snapshot"
+        result_path = trial_dir / "result.json"
+        result_path.write_text(
+            json.dumps(
+                {
+                    "task_id": {"path": str(snapshot)},
+                    "finished_at": "2026-07-22T21:19:06Z",
+                    "verifier_result": {"rewards": {"reward": 1.0}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = harbor_runner.JobResult(
+            agent="claude-code",
+            model="anthropic/claude-opus-4-7",
+            label="claude-opus",
+            job_name="run-claude-opus",
+            n_trials_expected=1,
+            returncode=0,
+            elapsed_sec=1.0,
+            job_dir=str(job_dir),
+            runner_log=str(jobs_dir / "run-claude-opus.runner.log"),
+            resumed=False,
+        )
+
+        archives = harbor_runner.collect_trial_archives([result], [original_task])
+
+        assert list(archives) == [original_task.resolve()]
+        assert len(archives[original_task.resolve()]) == 1
+
+
 def check_sigterm_enters_cleanup_path() -> None:
     try:
         harbor_runner.handle_sigterm(15, None)
@@ -127,6 +184,37 @@ def check_network_split_snapshots() -> None:
             assert harbor_runner.load_toml(agent / "task.toml")["environment"]["allow_internet"] is True
     finally:
         harbor_runner.time.sleep = original_sleep
+
+
+def check_oracle_spinner() -> None:
+    class TTYBuffer(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = TTYBuffer()
+    display = harbor_runner.OracleProgressDisplay(output)
+    display.update("Oracle progress: 0/1 result(s) finished (0.0%)")
+    display.update("Oracle progress: 1/1 result(s) finished (100.0%)")
+    display.finish()
+    rendered = output.getvalue()
+    assert "Oracle [|] progress: 0/1" in rendered
+    assert "Oracle [/] progress: 1/1" in rendered
+    assert "\033[K" in rendered
+
+
+def check_agent_progress_order() -> None:
+    specs = [
+        SimpleNamespace(job_name="claude", label="claude-opus"),
+        SimpleNamespace(job_name="codex", label="codex-gpt-5-5"),
+        SimpleNamespace(job_name="gemini", label="gemini-pro"),
+    ]
+    output = io.StringIO()
+    reporter = harbor_runner.ProgressReporter(specs, output)
+    reporter.report(specs[2], "gemini update")
+    block = output.getvalue().split("=============", 1)[0]
+    assert block.index("claude-opus:") < block.index("codex-gpt-5-5:")
+    assert block.index("codex-gpt-5-5:") < block.index("gemini-pro:")
+    assert "gemini-pro: gemini update" in block
 
 
 def check_remote_bundle_wiring() -> None:
@@ -203,9 +291,13 @@ if __name__ == "__main__":
     check_run_identity()
     check_names_are_valid_and_unique()
     check_cleanup_is_targeted()
+    check_jobs_dir_is_cleared_for_new_runs()
+    check_snapshot_results_map_to_original_task()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()
     check_network_split_snapshots()
+    check_oracle_spinner()
+    check_agent_progress_order()
     check_remote_bundle_wiring()
     check_remote_policy_wiring()
     check_remote_progress_reporting()

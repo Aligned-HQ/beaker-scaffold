@@ -76,6 +76,11 @@ machine; task environments must still run without internet access.
    ./harbor_runner.py task
    ```
 
+   A fresh run clears the contents of the configured `harbor-jobs/` directory
+   first, so it retains only the current run's output. Use `--resume` to
+   preserve an interrupted run, or `--archive-only` to process existing output
+   without clearing it.
+
    To submit the task to the Workbench Harbor service instead, create a local
    environment file and source it before starting the remote runner:
 
@@ -97,7 +102,9 @@ machine; task environments must still run without internet access.
    Gemini CLI. Each run gets an isolated Modal App and is cleaned up on normal
    completion or interruption. Local Modal runs use separate immutable task
    snapshots: the Oracle snapshot is offline, while the agent snapshot enables
-   internet access. During a remote run it prints Workbench phase
+   internet access. While the local Oracle is running, the terminal shows a
+   live spinner and result percentage; redirected output receives periodic
+   progress lines. During a remote run it prints Workbench phase
    changes, Oracle and per-agent trial counts, periodic heartbeats, result
    summaries, and trajectory-download progress. Use
    `--remote-progress-interval-sec SECONDS` to change the heartbeat interval
