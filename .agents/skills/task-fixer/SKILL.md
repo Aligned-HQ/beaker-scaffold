@@ -166,6 +166,10 @@ the exact missing path and remedy instead of inventing it.
      declared artifacts;
    - input files and CLIs/packages needed by the solution and verifier;
    - output paths and environment variables used by the existing code;
+   - executable lookup behavior under Harbor/Modal: whether the existing
+     entrypoints invoke bare `python`, `python3`, `pytest`, or other CLIs, and
+     whether dependencies are available only through a virtualenv or a
+     Dockerfile `PATH` setting;
    - Docker build contexts, `COPY` sources, entrypoints, and required users;
    - network calls, host-specific paths, and files referenced but not present.
 
@@ -224,6 +228,18 @@ the exact missing path and remedy instead of inventing it.
      `tests/test.sh` or runtime execution. If the helper cannot obtain a wheel
      for a required package, report the package, target Python/platform, and
      exact approved-source remedy;
+   - do not rely solely on Dockerfile `ENV PATH=...` or `VIRTUAL_ENV` for
+     dependencies. Harbor/Modal can invoke a script with a minimal `env` map;
+     in that case a bare `python3` or `pytest` may resolve to the base system
+     interpreter instead of a copied virtualenv. When the existing solution or
+     verifier entrypoint uses bare commands (and cannot be edited under this
+     skill), install its required packages into the final image's default
+     system interpreter from the vendored wheelhouse, for example with a
+     final-stage `python -m pip install --no-cache-dir --no-index
+     --find-links=/opt/wheels -r /opt/wheels/requirements.txt`, then remove
+     the wheelhouse. A virtualenv may remain as an optimization, but it must
+     not be the only place the packages exist unless the existing entrypoint
+     explicitly selects it;
    - if no approved base or local package bundle can satisfy a required import
      or CLI, leave the task policy unchanged and report the dependency blocker;
    - copy every existing runtime input under `environment/data/` into the image,
@@ -293,6 +309,26 @@ the exact missing path and remedy instead of inventing it.
    temporary container is allowed; do not execute `solution/solve.py`, the
    solution entrypoint, `tests/test.sh`, pytest, the Oracle, Harbor, or any agent
    trajectory from this skill.
+
+   Also run a dependency-only smoke check in each affected image with
+   `--network none` and a scrubbed environment, so the check does not inherit
+   the image's `PATH` by accident. For example:
+
+   ```bash
+   docker run --rm --network none --entrypoint /usr/bin/env <image> \
+     -i DEBIAN_FRONTEND=noninteractive /bin/sh -c \
+     'command -v python3 && python3 -c "import <runtime-packages>"'
+   ```
+
+   For a separate verifier image, also check `command -v pytest` (or every
+   other CLI named by `tests/test.sh`) and import its required modules. The
+   check must succeed using the interpreter selected by bare commands under
+   the scrubbed environment; do not treat a normal-`PATH` virtualenv check as
+   sufficient. If a prior Oracle attempt exists, read its `agent/oracle.txt`,
+   verifier stdout, exit code, and trial log before interpreting artifact
+   errors. A best-effort download failure such as `path does not exist` is
+   usually downstream of the producer or verifier failing; repair that primary
+   failure rather than adding placeholder outputs or changing artifact names.
 
    Use `--network none` for any permitted container check. Remove temporary
    containers and images in a trap/cleanup path, including after interruption.

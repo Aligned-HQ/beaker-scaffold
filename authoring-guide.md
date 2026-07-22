@@ -59,9 +59,10 @@ Before editing a task, run the project setup check:
 It checks Python 3.11+, Git, make, ripgrep, hashing utilities, Claude Code or
 Codex, Harbor, Docker and its reachable daemon, the vendored
 `harbor_runner.py` and its local Docker smoke mode, the project-level
-`task_implemention.toml` rubric, the mirrored skills, the skill wrappers, the
-skill report directory and status file, and the non-strict scaffold contract. It does not install software,
-build images, authenticate services, or make network calls.
+`task_implemention.toml` rubric, the mirrored skills, the skill wrappers, and
+the skill report directory and status file. It does not validate the task
+scaffold contract, install software, build images, authenticate services, or
+make network calls.
 
 The Harbor runner, Docker smoke test, and task-review rubric are part of this
 repository, so the documented commands use them directly.
@@ -408,9 +409,9 @@ Run the final strict static check after the trajectory review:
 python3 scripts/validate_scaffold.py --strict
 ```
 
-The setup check in step 2 already runs the non-strict contract check. The
-strict mode rejects scaffold markers and requires real input data or a checked-
-in deterministic generator. Resolve every failure before handoff.
+The setup check in step 2 does not run scaffold contract validation. Strict mode
+also rejects scaffold markers and requires real input data or a checked-in
+deterministic generator. Resolve every failure before handoff.
 
 ## 11. Upload and submit on Workbench
 

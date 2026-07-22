@@ -306,18 +306,6 @@ else
     fail_check "Skill reports directory or skill-status.md is missing or not writable." "Restore writable skill-reports/ and skill-status.md so skill wrappers can save Markdown results and status updates."
 fi
 
-if [[ -f "${REPO_ROOT}/scripts/validate_scaffold.py" ]]; then
-    validation_output="$(python3 "${REPO_ROOT}/scripts/validate_scaffold.py" 2>&1)"
-    validation_status=$?
-    if ((validation_status == 0)); then
-        pass_check "Scaffold contract check passes (non-strict mode)"
-    else
-        fail_check "Scaffold contract check failed: $validation_output" "Run python3 scripts/validate_scaffold.py, fix each reported task contract issue, and rerun this check."
-    fi
-else
-    fail_check "scripts/validate_scaffold.py is missing." "Restore scripts/validate_scaffold.py and rerun this check."
-fi
-
 info_check "Client policy: task environments must set allow_internet = false."
 info_check "Client policy: measure each built runtime/verifier image with docker image inspect and keep it <= 2,000,000,000 bytes."
 info_check "This check does not build images, authenticate agent CLIs, or contact network services."
