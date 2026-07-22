@@ -76,6 +76,22 @@ machine; task environments must still run without internet access.
    ./harbor_runner.py task
    ```
 
+   To submit the task to the Workbench Harbor service instead, create a local
+   environment file and source it before starting the remote runner:
+
+   ```bash
+   cp .env.example .env
+   # Edit .env and paste your token from Workbench → Settings → Access token.
+   set -a
+   source .env
+   set +a
+   ./harbor_runner.py task --remote
+   ```
+
+   The `.env` file is ignored by Git and excluded from remote task bundles. Each
+   user must use their own scoped `WORKBENCH_RUNNER_TOKEN`; never share one token
+   across users.
+
    The runner executes the Oracle first and starts the three agent setups only
    if the Oracle passes. The default model jobs are Claude Code, Codex, and
    Gemini CLI. Each run gets an isolated Modal App and is cleaned up on normal
