@@ -45,16 +45,24 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
+import io
 import json
 import os
+import posixpath
 import re
 import signal
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -86,6 +94,63 @@ DEFAULT_RUNS: tuple[tuple[str, str, str, int], ...] = (
         DEFAULT_CONCURRENCY,
     ),
 )
+
+REMOTE_TERMINAL_STATES = {
+    "ORACLE_FAILED",
+    "ORACLE_EXCEPTION",
+    "COMPLETE",
+    "CANCELED",
+    "EXPIRED",
+    "ERROR",
+}
+REMOTE_ACTIVE_STATES = {
+    "CREATED",
+    "UPLOADING",
+    "VALIDATING",
+    "QUEUED",
+    "ORACLE_RUNNING",
+    "AGENTS_QUEUED",
+    "AGENTS_RUNNING",
+    "FINALIZING",
+}
+REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
+REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
+REMOTE_AGENT_CONFIGS = {
+    ("claude-code", "anthropic/claude-opus-4-7"): "claude-opus",
+    ("codex", "openai/gpt-5.5"): "codex-gpt-5-5",
+    ("gemini-cli", "google/gemini-3.1-pro-preview"): "gemini-pro",
+}
+REMOTE_EXCLUDED_PARTS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "harbor-jobs",
+    "jobs",
+    "trajectories",
+    "reports",
+    "report",
+    "caches",
+    ".runner-logs",
+    "node_modules",
+}
+REMOTE_SECRET_NAME_RE = re.compile(
+    r"(^\.env(?:\..*)?$|credentials?|service[-_.]?account|private[-_.]?key|modal[-_.]?token|\.(?:pem|p12|pfx|key)$)",
+    re.IGNORECASE,
+)
+REMOTE_SECRET_CONTENT_RES = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
+    re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
+    re.compile(r"\bmodal_[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:ANTHROPIC|OPENAI|GEMINI|GOOGLE|MODAL)_?(?:API_)?KEY\s*[:=]\s*[^\s$<{[]+", re.IGNORECASE),
+    re.compile(r"\bMODAL_TOKEN_(?:ID|SECRET)\s*[:=]\s*[^\s$<{[]+", re.IGNORECASE),
+)
+REMOTE_HOST_PATH_RE = re.compile(r"(?:^|[\s\"'=])(?:/(?:Users|Volumes)/|[A-Za-z]:\\Users\\)")
 
 RUNNING_PROCESSES: dict[str, subprocess.Popen[str]] = {}
 PROCESS_LOCK = threading.Lock()
@@ -251,6 +316,711 @@ def slug(value: str) -> str:
     value = re.sub(r"[^a-z0-9_.-]+", "-", value)
     value = re.sub(r"-+", "-", value).strip("-")
     return value or "job"
+
+
+class RemoteInputError(Exception):
+    """A local request/archive error that maps to the documented exit code 2."""
+
+
+class RemoteClientError(Exception):
+    """A sanitized HTTP/service failure from the Workbench Harbor API."""
+
+    def __init__(self, status: int, code: str, message: str, headers: dict[str, str] | None = None):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.headers = headers or {}
+
+
+def remote_service_base(raw: str) -> str:
+    value = (raw or "").strip().rstrip("/")
+    if not re.fullmatch(r"https?://[^\s/]+(?:/[^\s]*)?", value, re.IGNORECASE):
+        raise RemoteInputError("--service-url must be an http(s) URL")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise RemoteInputError("--service-url must not contain credentials, a query string, or a fragment")
+    path_value = parsed.path.rstrip("/")
+    if path_value.endswith("/v1"):
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path_value, "", ""))
+    path_value = f"{path_value}/v1" if path_value else "/v1"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path_value, "", ""))
+
+
+def remote_url(base: str, endpoint: str) -> str:
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        return endpoint
+    if not endpoint.startswith("/"):
+        endpoint = f"/{endpoint}"
+    if base.endswith("/v1") and endpoint.startswith("/v1"):
+        return f"{base}{endpoint[3:]}"
+    return f"{base}{endpoint}"
+
+
+def _remote_json(raw: bytes) -> dict[str, object]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _remote_response_headers(response: object) -> dict[str, str]:
+    headers = getattr(response, "headers", {})
+    return {str(key).lower(): str(value) for key, value in headers.items()}
+
+
+def remote_json_request(
+    method: str,
+    url: str,
+    token: str,
+    *,
+    payload: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> tuple[int, dict[str, object], dict[str, str]]:
+    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if payload is not None:
+        request_headers["Content-Type"] = "application/json"
+    request_headers.update(headers or {})
+    data = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, _remote_json(response.read()), _remote_response_headers(response)
+    except urllib.error.HTTPError as error:
+        response_headers = _remote_response_headers(error)
+        body = error.read()
+        if error.code == 304:
+            return 304, {}, response_headers
+        parsed = _remote_json(body)
+        details = parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
+        code = str(details.get("code") or f"http_{error.code}")
+        message = str(details.get("message") or f"Workbench Harbor API returned HTTP {error.code}")
+        raise RemoteClientError(error.code, code, message[:500], response_headers) from None
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise RemoteClientError(0, "network", "Could not reach the Workbench Harbor service.") from error
+
+
+def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
+    request_headers = {str(key): str(value) for key, value in headers.items()}
+    # A signed URL is the authorization for this one object. The Workbench
+    # bearer token is intentionally not sent to Storage.
+    request = urllib.request.Request(url, data=archive, headers=request_headers, method="PUT")
+    try:
+        with urllib.request.urlopen(request, timeout=120.0) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RemoteClientError(response.status, "upload_failed", "The task bundle upload failed.")
+    except urllib.error.HTTPError as error:
+        raise RemoteClientError(error.code, "upload_failed", "The task bundle upload failed.") from None
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise RemoteClientError(0, "network", "The task bundle upload could not reach Storage.") from error
+
+
+def remote_archive_name_allowed(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    return not any(part in REMOTE_EXCLUDED_PARTS or part.startswith("._") for part in relative.parts)
+
+
+def remote_reject_sensitive_name(path: Path) -> None:
+    if REMOTE_SECRET_NAME_RE.search(path.name):
+        raise RemoteInputError(f"task bundle contains a credential-looking file: {path.name}")
+
+
+def remote_scan_file(path: Path) -> None:
+    remote_reject_sensitive_name(path)
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise RemoteInputError(f"could not read task file {path}: {error}") from error
+    if len(data) > 20 * 1024 * 1024 or b"\x00" in data:
+        return
+    text = data.decode("utf-8", errors="ignore")
+    if REMOTE_HOST_PATH_RE.search(text):
+        raise RemoteInputError(f"task file contains a host-specific author-machine path: {path}")
+    if any(pattern.search(text) for pattern in REMOTE_SECRET_CONTENT_RES):
+        raise RemoteInputError(f"task file appears to contain a provider or Modal credential: {path}")
+
+
+def build_remote_task_bundle(task_root: Path) -> tuple[bytes, str, int]:
+    """Create the exact immutable tar.gz sent to Workbench.
+
+    This deliberately avoids ``tar.add(..., recursive=True)`` so local jobs,
+    reports, macOS metadata, and credentials cannot enter the request by
+    accident. Symlinks are retained only when their target stays under the
+    submitted task root; the server validates the same boundary again.
+    """
+    root = task_root.resolve()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", root.name):
+        raise RemoteInputError("the task directory name must contain only letters, digits, '.', '_' or '-'")
+    required = (
+        root / "task.toml",
+        root / "instruction.md",
+        root / "solution",
+        root / "tests",
+        root / "environment",
+    )
+    missing = [str(item.relative_to(root)) for item in required if not item.exists()]
+    if missing:
+        raise RemoteInputError(f"task is missing required Harbor paths: {', '.join(missing)}")
+
+    output = io.BytesIO()
+    try:
+        with tarfile.open(fileobj=output, mode="w:gz", format=tarfile.PAX_FORMAT, dereference=False) as archive:
+            archive.add(root, arcname=root.name, recursive=False)
+            for item in sorted(root.rglob("*")):
+                if not remote_archive_name_allowed(item, root):
+                    continue
+                remote_reject_sensitive_name(item)
+                if item.is_symlink():
+                    target = (item.parent / os.readlink(item)).resolve()
+                    try:
+                        target.relative_to(root)
+                    except ValueError as error:
+                        raise RemoteInputError(f"task symlink leaves the task root: {item}") from error
+                elif item.is_file():
+                    remote_scan_file(item)
+                archive.add(item, arcname=f"{root.name}/{item.relative_to(root).as_posix()}", recursive=False)
+    except (OSError, tarfile.TarError) as error:
+        if isinstance(error, RemoteInputError):
+            raise
+        raise RemoteInputError(f"could not create the task bundle: {error}") from error
+    data = output.getvalue()
+    if len(data) > REMOTE_MAX_BUNDLE_BYTES:
+        raise RemoteInputError(f"compressed task bundle exceeds {REMOTE_MAX_BUNDLE_BYTES} bytes")
+    digest = f"sha256:{hashlib.sha256(data).hexdigest()}"
+    return data, digest, len(data)
+
+
+def remote_agent_payload(args: argparse.Namespace) -> list[dict[str, object]]:
+    default_concurrency = args.n_concurrent or args.default_concurrency
+    try:
+        specs = (
+            [parse_agent_spec(item, default_concurrency) for item in args.run]
+            if args.run
+            else [
+                AgentSpec(agent, model, label, default_concurrency)
+                for agent, model, label, _ in DEFAULT_RUNS
+            ]
+        )
+    except SystemExit as error:
+        raise RemoteInputError(str(error)) from error
+    agents: list[dict[str, object]] = []
+    for spec in specs:
+        agent_id = REMOTE_AGENT_CONFIGS.get((spec.agent, spec.model))
+        if agent_id is None:
+            raise RemoteInputError(
+                f"remote mode only supports the server-approved agent/model pairs; got {spec.agent}:{spec.model}"
+            )
+        if spec.n_concurrent < 1 or spec.n_concurrent > 5:
+            raise RemoteInputError(f"remote concurrency for {agent_id} must be between 1 and 5")
+        agents.append({
+            "id": agent_id,
+            "agent": spec.agent,
+            "model": spec.model,
+            "concurrency": spec.n_concurrent,
+        })
+    if not agents:
+        raise RemoteInputError("remote mode requires at least one approved agent")
+    total_trials = args.repeats * sum(int(agent["concurrency"]) for agent in agents)
+    if total_trials > 30:
+        raise RemoteInputError("remote mode exceeds the server's 30-trial configuration limit")
+    return agents
+
+
+def remote_state_path(jobs_dir: Path, run_id: str) -> Path:
+    return jobs_dir.resolve() / run_id / "service-run.json"
+
+
+def remote_request_state_path(jobs_dir: Path, local_id: str) -> Path:
+    return jobs_dir.resolve() / f"{local_id}.service-request.json"
+
+
+def load_remote_state(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RemoteInputError(f"could not read remote run state {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise RemoteInputError(f"remote run state is not a JSON object: {path}")
+    return value
+
+
+def save_remote_state(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def remote_retry_after(headers: dict[str, str], fallback: float) -> float:
+    raw = headers.get("retry-after")
+    try:
+        value = float(raw) if raw is not None else fallback
+    except ValueError:
+        value = fallback
+    return max(0.0, min(value, 60.0))
+
+
+def print_remote_progress(status: dict[str, object], previous: tuple[object, ...] | None) -> tuple[object, ...]:
+    state = status.get("state")
+    agents = status.get("agents") if isinstance(status.get("agents"), list) else []
+    signature_parts: list[object] = [state]
+    details: list[str] = []
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        signature = (
+            agent.get("id"),
+            agent.get("state"),
+            agent.get("finished_trials"),
+            agent.get("pass_count"),
+            agent.get("fail_count"),
+            agent.get("exception_count"),
+        )
+        signature_parts.extend(signature)
+        details.append(
+            f"{agent.get('id')}: {agent.get('finished_trials', 0)}/{agent.get('expected_trials', 0)} "
+            f"finished, {agent.get('pass_count', 0)} pass, {agent.get('fail_count', 0)} fail, "
+            f"{agent.get('exception_count', 0)} exception"
+        )
+    signature = tuple(signature_parts)
+    if signature != previous:
+        print(f"remote state: {state}", flush=True)
+        for detail in details:
+            print(f"  {detail}", flush=True)
+    return signature
+
+
+def poll_remote_status(
+    base: str,
+    run_id: str,
+    token: str,
+    *,
+    minimum_delay: float,
+    maximum_delay: float,
+    state_path: Path,
+    state: dict[str, object],
+) -> dict[str, object]:
+    etag: str | None = None
+    previous_signature: tuple[object, ...] | None = None
+    delay = max(0.25, minimum_delay)
+    while True:
+        headers = {"If-None-Match": etag} if etag else {}
+        try:
+            http_status, status, response_headers = remote_json_request(
+                "GET", remote_url(base, f"/v1/harbor/runs/{run_id}"), token, headers=headers
+            )
+        except RemoteClientError as error:
+            if error.status in {429, 500, 502, 503, 504}:
+                wait = remote_retry_after(error.headers, delay)
+                print(f"remote poll temporarily unavailable; retrying in {wait:g}s", flush=True)
+                time.sleep(wait)
+                delay = min(maximum_delay, max(minimum_delay, delay * 2))
+                continue
+            raise
+        if http_status == 304:
+            time.sleep(remote_retry_after(response_headers, delay))
+            delay = min(maximum_delay, max(minimum_delay, delay * 2))
+            continue
+        etag = response_headers.get("etag", etag)
+        previous_signature = print_remote_progress(status, previous_signature)
+        state.update({"run_id": run_id, "last_status": status.get("state"), "last_status_response": status})
+        save_remote_state(state_path, state)
+        if status.get("state") in REMOTE_TERMINAL_STATES:
+            return status
+        wait = remote_retry_after(response_headers, delay)
+        time.sleep(wait)
+        delay = min(maximum_delay, max(minimum_delay, delay * 2))
+
+
+def safe_remote_extract(archive_bytes: bytes, destination: Path, run_id: str) -> int:
+    if not re.fullmatch(r"hr_[A-Za-z0-9_-]{12,100}", run_id):
+        raise RemoteClientError(0, "unsafe_archive", "The trajectory archive run id is invalid.")
+    if not archive_bytes.startswith(b"\x1f\x8b"):
+        raise RemoteClientError(0, "archive_format", "The trajectory download was not gzip-compressed.")
+    members: list[tarfile.TarInfo] = []
+    names: set[str] = set()
+    roots: set[str] = set()
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            name = member.name
+            if not name or "\\" in name or name.startswith("/"):
+                raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains an unsafe path.")
+            if any(part in {".", ".."} for part in name.split("/")):
+                raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains path traversal.")
+            normalized = posixpath.normpath(name)
+            if normalized == "." or normalized == ".." or normalized.startswith("../"):
+                raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains path traversal.")
+            root = normalized.split("/", 1)[0]
+            roots.add(root)
+            if normalized in names:
+                raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains duplicate paths.")
+            names.add(normalized)
+            if member.islnk() or member.ischr() or member.isblk() or member.isfifo():
+                raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains an unsupported link or device.")
+            if not member.isdir() and not member.isfile() and not member.issym():
+                raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains an unsupported entry type.")
+            if member.issym():
+                if not member.linkname or "\\" in member.linkname or re.match(r"^[A-Za-z]:", member.linkname):
+                    raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains an unsafe symlink.")
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(normalized), member.linkname))
+                if target != root and not target.startswith(f"{root}/"):
+                    raise RemoteClientError(0, "unsafe_archive", "The trajectory archive contains a symlink outside its run root.")
+            members.append(member)
+        if roots != {run_id}:
+            raise RemoteClientError(0, "unsafe_archive", "The trajectory archive root does not match the run id.")
+        root_members = [member for member in members if posixpath.normpath(member.name) == run_id]
+        if len(root_members) != 1 or not root_members[0].isdir():
+            raise RemoteClientError(0, "unsafe_archive", "The trajectory archive must contain one run-root directory.")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        stage_parent = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=destination.parent))
+        stage = stage_parent / run_id
+        stage.mkdir()
+        try:
+            directories = sorted((member for member in members if member.isdir()), key=lambda item: item.name.count("/"))
+            regular_files = [member for member in members if member.isfile()]
+            symlinks = [member for member in members if member.issym()]
+            for member in directories:
+                relative = posixpath.relpath(posixpath.normpath(member.name), run_id)
+                target = stage / Path(relative)
+                target.mkdir(parents=True, exist_ok=True)
+            for member in regular_files:
+                relative = posixpath.relpath(posixpath.normpath(member.name), run_id)
+                target = stage / Path(relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    raise RemoteClientError(0, "archive_extract", "A trajectory file could not be read.")
+                with target.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(member.mode & 0o777)
+            for member in symlinks:
+                relative = posixpath.relpath(posixpath.normpath(member.name), run_id)
+                target = stage / Path(relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(member.linkname)
+            if destination.exists() or destination.is_symlink():
+                if destination.is_symlink() or not destination.is_dir():
+                    raise RemoteClientError(0, "archive_extract", "The local trajectory destination is not a directory.")
+                shutil.rmtree(destination)
+            os.replace(stage, destination)
+        finally:
+            shutil.rmtree(stage_parent, ignore_errors=True)
+    return len(members)
+
+
+def remote_local_archive_ready(base_dir: Path, run_id: str, sha256: str) -> bool:
+    destination = base_dir / run_id
+    marker = base_dir / f".{run_id}.sha256"
+    return destination.is_dir() and marker.is_file() and marker.read_text(encoding="utf-8").strip() == sha256
+
+
+def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, object]) -> Path:
+    download_url = manifest.get("download_url")
+    sha256 = manifest.get("sha256")
+    size_bytes = manifest.get("size_bytes")
+    root_directory = manifest.get("root_directory")
+    expected_entries = manifest.get("entry_count")
+    try:
+        download_parts = urllib.parse.urlsplit(download_url) if isinstance(download_url, str) else None
+    except ValueError:
+        download_parts = None
+    if (
+        not isinstance(download_url, str)
+        or download_parts is None
+        or download_parts.scheme not in {"http", "https"}
+        or not download_parts.hostname
+        or download_parts.username is not None
+        or download_parts.password is not None
+        or not isinstance(sha256, str)
+        or not re.fullmatch(r"sha256:[a-f0-9]{64}", sha256)
+        or not isinstance(size_bytes, int)
+        or isinstance(size_bytes, bool)
+        or size_bytes < 1
+        or size_bytes > REMOTE_MAX_ARCHIVE_BYTES
+        or root_directory != run_id
+        or not isinstance(expected_entries, int)
+        or isinstance(expected_entries, bool)
+        or expected_entries < 1
+    ):
+        raise RemoteClientError(0, "archive_manifest", "The service returned an invalid trajectory manifest.")
+    destination = base_dir.resolve() / run_id
+    marker = base_dir.resolve() / f".{run_id}.sha256"
+    if remote_local_archive_ready(base_dir.resolve(), run_id, sha256):
+        print(f"trajectory archive: already verified at {destination}", flush=True)
+        return destination
+    try:
+        with urllib.request.urlopen(urllib.request.Request(download_url, method="GET"), timeout=120.0) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > REMOTE_MAX_ARCHIVE_BYTES:
+                        raise RemoteClientError(0, "archive_too_large", "The trajectory archive exceeds the client size limit.")
+                except ValueError:
+                    raise RemoteClientError(0, "archive_download", "The trajectory archive returned an invalid size.") from None
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > REMOTE_MAX_ARCHIVE_BYTES:
+                    raise RemoteClientError(0, "archive_too_large", "The trajectory archive exceeds the client size limit.")
+                chunks.append(chunk)
+            archive_bytes = b"".join(chunks)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        raise RemoteClientError(0, "archive_download", "The trajectory archive download failed.") from error
+    if len(archive_bytes) != size_bytes:
+        raise RemoteClientError(0, "archive_size", "The trajectory archive size did not match its manifest.")
+    actual = f"sha256:{hashlib.sha256(archive_bytes).hexdigest()}"
+    if actual != sha256:
+        raise RemoteClientError(0, "archive_checksum", "The trajectory archive checksum did not match the manifest.")
+    count = safe_remote_extract(archive_bytes, destination, run_id)
+    if count != expected_entries:
+        raise RemoteClientError(0, "archive_manifest", "The trajectory archive entry count did not match its manifest.")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{sha256}\n", encoding="utf-8")
+    print(f"trajectory archive: extracted {count} entries to {destination}", flush=True)
+    return destination
+
+
+def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> int:
+    state = status.get("state")
+    if state == "ORACLE_FAILED":
+        return 3
+    if state == "COMPLETE":
+        summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+        try:
+            exception_count = int(summary.get("exception_count", 0) or 0)
+        except (TypeError, ValueError):
+            return 5
+        return 4 if exception_count > 0 else 0
+    return 5
+
+
+def run_remote(task_root: Path, args: argparse.Namespace) -> int:
+    base: str | None = None
+    token = ""
+    run_id: str | None = None
+    try:
+        if args.env != "modal":
+            raise RemoteInputError("--remote requires --env modal")
+        if args.archive_only or args.oracle_sort or args.dry_run:
+            raise RemoteInputError("--remote cannot be combined with --archive-only, --oracle-sort, or --dry-run")
+        forbidden = {
+            "--env-file": args.env_file,
+            "--agent-env": args.agent_env,
+            "--verifier-env": args.verifier_env,
+            "--environment-kwarg": args.environment_kwarg,
+            "--agent-kwarg": args.agent_kwarg,
+            "--artifact": args.artifact,
+            "--modal-secret": args.modal_secret,
+        }
+        used = [flag for flag, values in forbidden.items() if values]
+        if used:
+            raise RemoteInputError(f"remote mode does not accept client-controlled settings: {', '.join(used)}")
+        token = (args.workbench_token or os.environ.get("WORKBENCH_RUNNER_TOKEN", "")).strip()
+        if not token:
+            raise RemoteInputError("provide --workbench-token or WORKBENCH_RUNNER_TOKEN for remote mode")
+        if args.remote_poll_min <= 0 or args.remote_poll_max <= 0 or args.remote_poll_max < args.remote_poll_min:
+            raise RemoteInputError("remote poll intervals must be positive, with --remote-poll-max >= --remote-poll-min")
+        base = remote_service_base(args.service_url)
+        agents = remote_agent_payload(args)
+        jobs_dir = args.jobs_dir.resolve()
+        local_id = args.run_id
+        request_path = remote_request_state_path(jobs_dir, local_id)
+        state = load_remote_state(request_path) or {}
+        run_id = state.get("run_id") if isinstance(state.get("run_id"), str) else None
+        service_run_path: Path | None = None
+
+        if run_id is None and local_id.startswith("hr_"):
+            run_id = local_id
+        if run_id is None:
+            archive, bundle_sha256, bundle_size = build_remote_task_bundle(task_root)
+            idempotency_key = state.get("idempotency_key") if isinstance(state.get("idempotency_key"), str) else f"harbor-runner:{uuid4().hex}"
+            client_request_id = state.get("client_request_id") if isinstance(state.get("client_request_id"), str) else f"remote-{slug(task_root.name)}-{slug(local_id)}"
+            payload = {
+                "client_request_id": client_request_id,
+                "task": {"name": task_root.name, "format": "tar.gz", "sha256": bundle_sha256, "size_bytes": bundle_size},
+                "execution": {"attempts": args.repeats, "oracle_pass_threshold": args.pass_threshold, "agents": agents},
+            }
+            save_remote_state(request_path, {
+                **state,
+                "service_url": base,
+                "client_request_id": client_request_id,
+                "idempotency_key": idempotency_key,
+                "bundle_sha256": bundle_sha256,
+                "bundle_size_bytes": bundle_size,
+                "request_payload": payload,
+            })
+            try:
+                _, created, _ = remote_json_request(
+                    "POST",
+                    remote_url(base, "/v1/harbor/runs"),
+                    token,
+                    payload=payload,
+                    headers={"Idempotency-Key": idempotency_key},
+                )
+            except RemoteClientError as error:
+                if error.status in {400, 401, 403, 409, 422}:
+                    print(f"remote request rejected: {error.message}", file=sys.stderr)
+                    return 2
+                raise
+            run_id = created.get("run_id")
+            if not isinstance(run_id, str) or not run_id.startswith("hr_"):
+                raise RemoteClientError(0, "response", "The service returned an invalid run id.")
+            service_run_path = remote_state_path(jobs_dir, run_id)
+            state = {
+                **state,
+                "service_url": base,
+                "run_id": run_id,
+                "client_request_id": client_request_id,
+                "idempotency_key": idempotency_key,
+                "bundle_sha256": bundle_sha256,
+                "bundle_size_bytes": bundle_size,
+                "request_payload": payload,
+            }
+            save_remote_state(request_path, state)
+            save_remote_state(service_run_path, state)
+            upload = created.get("upload")
+            if isinstance(upload, dict) and isinstance(upload.get("url"), str):
+                upload_headers = upload.get("headers") if isinstance(upload.get("headers"), dict) else {}
+                remote_upload(str(upload["url"]), archive, {str(k): str(v) for k, v in upload_headers.items()})
+                print(f"remote upload: {bundle_size} bytes verified locally ({bundle_sha256})", flush=True)
+            try:
+                _, started, _ = remote_json_request(
+                    "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
+                )
+            except RemoteClientError as error:
+                if error.status in {400, 401, 403, 409, 422}:
+                    print(f"remote start rejected: {error.message}", file=sys.stderr)
+                    return 2
+                raise
+            print(f"remote run: {run_id} ({started.get('state', 'QUEUED')})", flush=True)
+        else:
+            service_run_path = remote_state_path(jobs_dir, run_id)
+            state = load_remote_state(service_run_path) or state
+            if state.get("service_url") and state.get("service_url") != base:
+                raise RemoteInputError("the saved remote run belongs to a different --service-url")
+            _, resume_status, _ = remote_json_request(
+                "GET", remote_url(base, f"/v1/harbor/runs/{run_id}"), token
+            )
+            if resume_status.get("state") in {"CREATED", "UPLOADING"}:
+                request_payload = state.get("request_payload")
+                if not isinstance(request_payload, dict):
+                    raise RemoteClientError(409, "upload_not_resumable", "The saved remote run has no resumable upload request.")
+                started = None
+                try:
+                    _, started, _ = remote_json_request(
+                        "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
+                    )
+                except RemoteClientError as error:
+                    if error.status == 409 and error.code == "bundle_not_found":
+                        started = None
+                    elif error.status in {400, 401, 403, 409, 422}:
+                        print(f"remote start rejected: {error.message}", file=sys.stderr)
+                        return 2
+                    else:
+                        raise
+                if started is None:
+                    archive, bundle_sha256, bundle_size = build_remote_task_bundle(task_root)
+                    if bundle_sha256 != state.get("bundle_sha256"):
+                        raise RemoteInputError("the local task changed after the remote run was created; submit a new run")
+                    _, created, _ = remote_json_request(
+                        "POST",
+                        remote_url(base, "/v1/harbor/runs"),
+                        token,
+                        payload=request_payload,
+                        headers={"Idempotency-Key": str(state.get("idempotency_key") or "")},
+                    )
+                    if created.get("run_id") != run_id:
+                        raise RemoteClientError(0, "response", "The service returned a different run id while resuming upload.")
+                    upload = created.get("upload")
+                    if not isinstance(upload, dict) or not isinstance(upload.get("url"), str):
+                        raise RemoteClientError(409, "upload_not_resumable", "The service did not return a resumable upload URL.")
+                    upload_headers = upload.get("headers") if isinstance(upload.get("headers"), dict) else {}
+                    remote_upload(str(upload["url"]), archive, {str(k): str(v) for k, v in upload_headers.items()})
+                    state.update({"bundle_size_bytes": bundle_size, "request_payload": request_payload})
+                    save_remote_state(service_run_path, state)
+                    try:
+                        _, started, _ = remote_json_request(
+                            "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
+                        )
+                    except RemoteClientError as error:
+                        if error.status in {400, 401, 403, 409, 422}:
+                            print(f"remote start rejected: {error.message}", file=sys.stderr)
+                            return 2
+                        raise
+                print(f"remote run: {run_id} ({started.get('state', 'QUEUED')})", flush=True)
+            else:
+                print(f"remote resume: {run_id}", flush=True)
+
+        assert isinstance(run_id, str)
+        service_run_path = service_run_path or remote_state_path(jobs_dir, run_id)
+        status = poll_remote_status(
+            base,
+            run_id,
+            token,
+            minimum_delay=max(0.25, args.remote_poll_min),
+            maximum_delay=max(args.remote_poll_min, args.remote_poll_max),
+            state_path=service_run_path,
+            state=state,
+        )
+        _, results, _ = remote_json_request(
+            "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/results"), token
+        )
+        manifest: dict[str, object] | None = None
+        for _ in range(20):
+            try:
+                _, manifest_value, _ = remote_json_request(
+                    "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/trajectories"), token
+                )
+                manifest = manifest_value
+                break
+            except RemoteClientError as error:
+                if error.status != 409:
+                    raise
+                time.sleep(1.0)
+        if manifest is None:
+            raise RemoteClientError(409, "trajectory_not_ready", "The service did not publish a trajectory archive.")
+        archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
+        state.update({
+            "run_id": run_id,
+            "service_url": base,
+            "terminal_state": status.get("state"),
+            "trajectory_sha256": manifest.get("sha256"),
+            "trajectory_directory": str(archive_destination),
+            "archive_downloaded": True,
+        })
+        save_remote_state(service_run_path, state)
+        if request_path != service_run_path:
+            save_remote_state(request_path, state)
+        return remote_exit_code(status, results)
+    except KeyboardInterrupt:
+        if getattr(args, "cancel_on_interrupt", False) and isinstance(run_id, str) and base:
+            try:
+                remote_json_request(
+                    "POST",
+                    remote_url(base, f"/v1/harbor/runs/{run_id}:cancel"),
+                    token,
+                )
+                print("remote run cancellation requested", flush=True)
+            except Exception:
+                print("remote run cancellation could not be confirmed", file=sys.stderr)
+        print("interrupt: remote run was not canceled" if not getattr(args, "cancel_on_interrupt", False) else "interrupt: remote run cancellation requested", file=sys.stderr)
+        return 130
+    except RemoteInputError as error:
+        print(f"remote input error: {error}", file=sys.stderr)
+        return 2
+    except RemoteClientError as error:
+        print(f"remote service error: {error}", file=sys.stderr)
+        return 5
 
 
 def default_run_id() -> str:
@@ -2266,6 +3036,38 @@ def main(argv: list[str]) -> int:
         help="Harbor execution backend (must be modal; default: modal).",
     )
     parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Submit this one task to the Workbench Harbor service instead of running local Modal jobs.",
+    )
+    parser.add_argument(
+        "--service-url",
+        default=os.environ.get("WORKBENCH_HARBOR_SERVICE_URL"),
+        help="Workbench Harbor API base URL (the /v1 suffix is added when omitted).",
+    )
+    parser.add_argument(
+        "--workbench-token",
+        default=os.environ.get("WORKBENCH_RUNNER_TOKEN"),
+        help="Workbench Firebase ID token or scoped runner token; may also come from WORKBENCH_RUNNER_TOKEN.",
+    )
+    parser.add_argument(
+        "--cancel-on-interrupt",
+        action="store_true",
+        help="Request remote cancellation on Ctrl-C; the default leaves the server run running.",
+    )
+    parser.add_argument(
+        "--remote-poll-min",
+        type=float,
+        default=1.0,
+        help="Minimum remote status poll delay in seconds (default: 1).",
+    )
+    parser.add_argument(
+        "--remote-poll-max",
+        type=float,
+        default=30.0,
+        help="Maximum remote status poll delay in seconds (default: 30).",
+    )
+    parser.add_argument(
         "--jobs-dir",
         type=Path,
         default=Path("harbor-jobs"),
@@ -2544,25 +3346,33 @@ def main(argv: list[str]) -> int:
         raise SystemExit("error: --oracle-concurrency must be >= 1")
     if args.default_concurrency < 1:
         raise SystemExit("error: --default-concurrency must be >= 1")
-    if any(not name.strip() for name in args.modal_secret):
+    if not args.remote and any(not name.strip() for name in args.modal_secret):
         raise SystemExit("error: --modal-secret names must not be empty")
 
-    for env_file in args.env_file:
-        if not env_file.is_file():
-            raise SystemExit(f"error: --env-file does not exist: {env_file}")
-    for env_file in args.smoke_env_file:
-        if not env_file.is_file():
-            raise SystemExit(f"error: --smoke-env-file does not exist: {env_file}")
-    for item in args.agent_env:
-        parse_key_value(item, "--agent-env")
-    for item in args.verifier_env:
-        parse_key_value(item, "--verifier-env")
-    for item in args.environment_kwarg:
-        parse_key_value(item, "--environment-kwarg")
-    for item in args.agent_kwarg:
-        parse_key_value(item, "--agent-kwarg")
+    if not args.remote:
+        for env_file in args.env_file:
+            if not env_file.is_file():
+                raise SystemExit(f"error: --env-file does not exist: {env_file}")
+        for env_file in args.smoke_env_file:
+            if not env_file.is_file():
+                raise SystemExit(f"error: --smoke-env-file does not exist: {env_file}")
+        for item in args.agent_env:
+            parse_key_value(item, "--agent-env")
+        for item in args.verifier_env:
+            parse_key_value(item, "--verifier-env")
+        for item in args.environment_kwarg:
+            parse_key_value(item, "--environment-kwarg")
+        for item in args.agent_kwarg:
+            parse_key_value(item, "--agent-kwarg")
 
     task_root = resolve_single_task(args.path)
+
+    if args.remote:
+        if args.smoke_test:
+            print("remote input error: --remote cannot be combined with --smoke-test", file=sys.stderr)
+            return 2
+        return run_remote(task_root, args)
+
     tasks = [task_root]
     validate_modal_task_policy(tasks, args.env)
 
