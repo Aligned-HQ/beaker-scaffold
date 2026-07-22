@@ -126,6 +126,42 @@ check_required_command git "Source control" "Install Git; agent CLIs and task ha
 check_required_command make "Project shortcuts" "Install make or run the documented commands directly."
 check_required_command rg "Repository search" "Install ripgrep; the skills and reviews use rg."
 
+workbench_env_file="${REPO_ROOT}/.env"
+workbench_token_state="missing"
+if [[ -f "$workbench_env_file" ]]; then
+    workbench_token_state="$(awk '
+        BEGIN { state = "missing" }
+        /^[[:space:]]*WORKBENCH_RUNNER_TOKEN[[:space:]]*=/ {
+            value = $0
+            sub(/^[[:space:]]*WORKBENCH_RUNNER_TOKEN[[:space:]]*=[[:space:]]*/, "", value)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if ((substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"") ||
+                (substr(value, 1, 1) == "\047" && substr(value, length(value), 1) == "\047")) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            state = (length(value) > 0) ? "filled" : "empty"
+            exit
+        }
+        END { print state }
+    ' "$workbench_env_file" 2>/dev/null || printf 'missing')"
+fi
+
+case "$workbench_token_state" in
+    filled)
+        pass_check "Workbench runner credential: .env contains a non-empty WORKBENCH_RUNNER_TOKEN"
+        ;;
+    empty)
+        fail_check \
+            "Workbench runner credential: .env has an empty WORKBENCH_RUNNER_TOKEN." \
+            "Log in to https://workbench.alignedhq.ai, click your profile -> Settings, create an access token, and paste it into .env as WORKBENCH_RUNNER_TOKEN=<token>. Rerun ./scripts/check-setup.sh; never commit or share .env."
+        ;;
+    missing|*)
+        fail_check \
+            "Workbench runner credential: .env is missing or does not define WORKBENCH_RUNNER_TOKEN." \
+            "Log in to https://workbench.alignedhq.ai, click your profile -> Settings, create an access token, copy .env.example to .env, paste it into WORKBENCH_RUNNER_TOKEN=<token>, and rerun ./scripts/check-setup.sh; never commit or share .env."
+        ;;
+esac
+
 if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
     hash_command="$(command -v shasum || command -v sha256sum)"
     pass_check "Hash utility: $hash_command"
