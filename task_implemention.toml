@@ -198,6 +198,20 @@ Use backticks when referring to file paths, commands, or code (e.g., `/app/data.
 PASS if instructions are concise, human-written, use absolute paths, and describe only what is needed to complete the task. FAIL if instructions use relative paths, hint at solution approaches, provide step-by-step procedures, appear LLM-generated, include unnecessary headings, preamble, roleplay, fluff, or list available tools/libraries that the agent should discover on its own."""
 
 [[criteria]]
+name = "instruction_minimality"
+description = "Instruction uses minimal Markdown, avoids spoon-feeding, and separates the task contract from solver process"
+guidance = """
+Review instruction.md specifically for authoring discipline, in addition to its factual clarity. The instruction should contain the concise task statement, available inputs, required outputs, constraints, and essential scientific definitions needed to make the problem well-posed.
+
+Use only Markdown that materially improves readability: short paragraphs, compact input/output lists, code formatting for paths and filenames, and equations or small headings when they are genuinely needed. Flag decorative sectioning, long nested lists, tables that do not clarify a contract, repeated headings, horizontal rules, roleplay, preambles, and implementation-style checklists that add reading burden without specifying a required output.
+
+Do not spoon-feed the solution. The instruction should not prescribe an exact algorithm, equation sequence, derivation, feature-engineering recipe, threshold-tuning plan, hyperparameter schedule, convergence checklist, library-call sequence, or other reference-solution procedure when that is the substance of the task. It may state domain facts, definitions, constraints, evaluation targets, and output requirements needed for a fair problem.
+
+Move solver workflow and process details to solution/process.md. That file should exist, be non-empty, and explain the reference workflow's scientific/computational decisions, validation checks, and output generation without exposing hidden answers or verifier-only constants. Do not penalize a task for keeping essential domain equations or definitions in instruction.md when removing them would make the task ambiguous.
+
+PASS if instruction.md is concise and readable, uses restrained Markdown, leaves meaningful method choices to the agent, and keeps reference-solution process details in a substantive solution/process.md. FAIL if it is cluttered, overly procedural, spoon-feeds the reference solution, or omits the process file or replaces it with hidden-answer leakage or a bare "run the reference solution" note."""
+
+[[criteria]]
 name = "solution_quality"
 description = "Solution demonstrates actual computation, not hardcoded answers"
 guidance = """

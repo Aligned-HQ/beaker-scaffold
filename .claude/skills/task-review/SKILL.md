@@ -4,8 +4,7 @@ description: Score a Harbor task folder against all criteria in
   `task_implemention.toml` and produce a PASS / FAIL / N/A scorecard with
   evidence. Use when the user asks to "review this task", "score this task",
   "grade the task instructions", "task scorecard", or points the skill at a
-  `projects/<id>` folder for evaluation against the rubric.
-argument-hint: <path/to/task-folder>
+  a task folder for evaluation against the rubric.
 ---
 
 Read every criterion in the repo-root `task_implemention.toml`, evaluate each against the target task folder, and emit a single scorecard. Be skeptical and concrete: cite file paths and line numbers as evidence for every verdict.
@@ -59,7 +58,7 @@ If the folder doesn't have this layout, stop and report what's missing — do no
      already exist
    - `README.md` if present
    Read whole files when they're small enough; for larger files, read the sections needed to evaluate each criterion. Do not delegate this to a subagent if you can read the files directly — you need the contents in scope to cite line numbers.
-3. **Require `solution/process.md`.** Confirm `solution/process.md` exists and lists the steps a solver would take to solve the problem. If it is missing, empty, or only says to run the reference solution, fail the appropriate reviewability/solution-quality criterion with evidence. The process file should explain the intended scientific/computational workflow without hardcoding hidden answers.
+3. **Require `solution/process.md`.** Confirm `solution/process.md` exists and lists the steps a solver would take to solve the problem. If it is missing, empty, or only says to run the reference solution, fail `instruction_minimality` and any relevant reviewability/solution-quality criterion with evidence. The process file should explain the intended scientific/computational workflow without hardcoding hidden answers.
 4. **Check practitioner plausibility.** Before scoring the scientific criteria, identify the real practitioner who would plausibly do this work, the setting where they would do it, the decision the workflow supports, and whether the task's sequence of inputs, computations, validation, and outputs matches that real workflow. Use `instruction.md`, `solution/process.md`, `README.md`, task metadata, and the actual solution/verifier behavior as evidence. If the workflow is only research-flavored, synthetic busywork, a disguised coding/schema exercise, or not something a practitioner would reasonably be paid to do, fail the relevant `scientifically_grounded`, `difficult`, `agentic`, `essential_difficulty`, `expert_time_estimate`, and/or `reviewable` criteria with concrete evidence.
 5. **Score each criterion.** For each rubric entry, decide one of:
    - `PASS` — meets the guidance.
@@ -119,11 +118,12 @@ These are reminders, not overrides — the `guidance` text in `task_implemention
 - **category_and_tags / task_name / task_toml_schema**: validate `task.toml` metadata against the rubric and Harbor schema at a review level
 - **resource_configuration / expert_time_estimate**: timeouts and CPU/memory should match the workload; `expert_time_estimate_hours` should be non-zero and plausible.
 - **instruction_clarity**: the prompt should specify goals, inputs, constraints, and output contract without becoming a step-by-step protocol. Flag instructions that pre-digest the science into algorithmic steps or dictate tools/libraries the agent should choose.
+- **instruction_minimality**: check that `instruction.md` uses only Markdown that materially improves readability, avoids decorative structure and implementation checklists, does not spoon-feed the solution, and keeps solver process details in `solution/process.md`. Permit code formatting, necessary equations, and compact headings when they clarify the task.
 - **novel / agentic / scientifically_grounded / difficult / reviewable**: judgment calls — be honest. A textbook exercise dressed up as a benchmark is still a textbook exercise; a task that only requires translating English into Python/NumPy should fail these criteria even if it is numerically complex.
 
 ## Client feedback checks
 
-Apply these checks while scoring `instruction_clarity`, `agentic`, `difficult`, `scientifically_grounded`, `essential_difficulty`, and `expert_time_estimate`. Cite concrete evidence from `instruction.md`, `task.toml`, solution files, and trajectories/logs when available.
+Apply these checks while scoring `instruction_clarity`, `instruction_minimality`, `agentic`, `difficult`, `scientifically_grounded`, `essential_difficulty`, and `expert_time_estimate`. Cite concrete evidence from `instruction.md`, `task.toml`, solution files, and trajectories/logs when available.
 
 - **Real research workflow**: PASS only when the task resembles a genuine multi-step domain workflow that would plausibly take an expert 4+ hours. The difficulty should come from scientific ambiguity, approach selection, interpretation, and validation — not from data-cleaning traps, long schemas, or reading-comprehension burden.
 - **Practitioner plausibility**: Name the likely practitioner role in the notes for at least one relevant verdict, such as "materials informatics scientist", "computational biologist", "microscopist", "clinical data scientist", or "process engineer". PASS only if that practitioner would plausibly perform this workflow in a real lab, company, field study, or analysis setting to support a concrete decision. FAIL when the task is merely a synthetic story around arbitrary transformations, when the workflow omits the validation or domain artifacts a practitioner would need, when no realistic stakeholder would care about the output, or when the work is mostly translating a prescribed recipe into code.
