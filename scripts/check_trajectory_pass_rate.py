@@ -253,7 +253,8 @@ def main() -> int:
     if average >= 0.5:
         print(
             "ERROR: average Claude/Codex/Gemini pass rate must be below 50% "
-            f"(raw Harbor output reports {average * 100:.1f}%)",
+            f"(raw Harbor output reports {average * 100:.1f}%); make the task "
+            "scientifically harder and rerun the agent campaign before submission",
             file=sys.stderr,
         )
         return 1

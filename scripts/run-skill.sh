@@ -487,12 +487,12 @@ each final runtime or separate verifier image must be at most 2 GB
 access to work around a bootstrap or dependency issue.
 
 Docker access mode for this invocation is ${DOCKER_ACCESS}. If this is a Codex
-task-fixer or task-review run, Docker access is provided through the wrapper's selected
-${CODEX_SANDBOX} sandbox; use Docker only for the target task's static image
+task-fixer or task-review run, Docker access is provided through the wrapper-selected
+${CODEX_SANDBOX} sandbox; use Docker only for the target task static image
 validation and cleanup. The skill cannot repair a host Docker daemon or grant
 access to an unapproved remote daemon.
 
-Use the skill's required workflow and evidence rules. For task-fixer, make the
+Use the required skill workflow and evidence rules. For task-fixer, make the
 smallest task-local edits needed and return only the final handoff, without
 planning, tool transcripts, or duplicated status sections. For task-review and
 trajectory-review, do not edit the task; return the complete requested scorecard

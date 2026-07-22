@@ -122,7 +122,10 @@ machine; task environments must still run without internet access.
    ```
 
    The runner clears and replaces the direct `trajectories/` output only after
-   a successful, exception-free run.
+   a successful, exception-free run. The average Claude/Codex/Gemini pass rate
+   must be strictly below 50% (Oracle is ignored), meaning the agents fail
+   more than half the time on average. If the rate is 50% or higher, make the
+   scientific task harder and rerun the authoring sequence before submitting.
 
 10. Run the final strict scaffold validation:
 
@@ -148,8 +151,10 @@ machine; task environments must still run without internet access.
     If `submission/` already exists, the script asks for confirmation before
     replacing it. Packaging checks `trajectories/summary.md` against the raw
     per-trial results under `harbor-jobs/` and requires the average
-    Claude/Codex/Gemini pass rate to be below 50%; Oracle is ignored. Upload
-    the resulting `submission/` directory to Workbench.
+    Claude/Codex/Gemini pass rate to be strictly below 50%; Oracle is ignored.
+    If the rate is 50% or higher, packaging fails and the task must be made
+    harder before rerunning the workflow. Upload the resulting `submission/`
+    directory to Workbench.
 
 ## Layout
 

@@ -27,6 +27,14 @@ should be difficult enough that the agents may fail or disagree. This exposes
 where scientific reasoning, method selection, implementation, and validation
 remain challenging for the models.
 
+There is also a submission difficulty gate. The average pass rate across the
+Claude, Codex, and Gemini agent runs must be strictly below 50% (Oracle is not
+included), so the agents must fail more than half the time on average. If the
+average pass rate is 50% or higher, the task is too easy to submit: increase
+the genuine scientific difficulty—such as the data challenge, meaningful
+method choices, or validation burden—while keeping every tested requirement
+explicit in `instruction.md`, then rerun the authoring workflow.
+
 The instruction is the agent's entire scientific specification. Tests must not
 require files, fields, keys, methods, thresholds, units, or other properties
 that the instruction does not ask the agent to produce. If a property matters
@@ -401,6 +409,12 @@ The trajectory review distinguishes genuine scientific failures from structural
 task bugs, prompt/test mismatches, tolerance problems, missing keys, and other
 clerical issues. Keep the complete trajectory archive with the submission.
 
+Use the trajectory results to apply the difficulty gate: the average Claude,
+Codex, and Gemini pass rate must be below 50%, ignoring the Oracle. If it is
+50% or higher, revise the task to make the scientific workflow harder for the
+agents while remaining solvable by a human expert. Rerun the fixer, review,
+smoke test, Harbor campaign, and trajectory review after changing the task.
+
 ## 10. Run strict scaffold validation
 
 Run the final strict static check after the trajectory review:
@@ -413,7 +427,7 @@ The setup check in step 2 does not run scaffold contract validation. Strict mode
 also rejects scaffold markers and requires real input data or a checked-in
 deterministic generator. Resolve every failure before handoff.
 
-## 11. Upload and submit on Workbench
+## 11. Verify the final handoff
 
 Before uploading, verify the skill reports and status:
 
@@ -423,7 +437,14 @@ Before uploading, verify the skill reports and status:
   --trajectory trajectories
 ```
 
-Package the task, trajectories, and skill reports together before uploading:
+Confirm that the reports, trajectories, and strict scaffold validation are
+complete. The final packaging step below is the point at which the upload
+bundle is assembled.
+
+## 12. Create the submission folder and upload it
+
+Run `package-submission` as the last local authoring step. It creates a
+`submission/` directory containing the task, trajectories, and skill reports:
 
 ```bash
 ./scripts/package-submission.sh
@@ -432,7 +453,8 @@ Package the task, trajectories, and skill reports together before uploading:
 If `submission/` already exists, the script asks for confirmation before
 replacing it. It checks `trajectories/summary.md` against the raw per-trial
 results under `harbor-jobs/` and requires the average Claude/Codex/Gemini
-pass rate to be below 50%; Oracle is ignored.
+pass rate to be strictly below 50%; Oracle is ignored. A rate of 50% or higher
+means the task must be made harder and rerun before it can be packaged.
 Remove generated caches, check that all intended inputs are tracked, and
 inspect the final diff. Upload the resulting `submission/` directory to
 Workbench. If a non-specialist cannot tell what a successful result means,
