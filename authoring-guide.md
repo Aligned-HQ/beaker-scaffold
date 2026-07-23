@@ -236,7 +236,10 @@ The three explanation fields have different jobs:
 - `solution_explanation` summarizes the reference strategy and key insights without pretending that a different implementation was used;
 - `verification_explanation` describes every substantive check and justifies numeric bounds or tolerances, including evidence that alternative correct approaches fit.
 
-Set timeouts and CPU, memory, storage, and GPU resources from the actual workflow. A slow computer is not a substitute for scientific difficulty.
+The maximum runtime for a task is 60 minutes. Set the task and job timeouts so
+the complete workflow fits within this limit. Set CPU, memory, storage, and GPU
+resources from the actual workflow; a slow computer is not a substitute for
+scientific difficulty.
 
 ## 4. Run the task-fixer script
 
@@ -466,8 +469,10 @@ submission or monitor it again. On a successful remote run, the client
 promotes the downloaded archive to the same direct `trajectories/` layout used
 by local runs. Partial remote runs remain under `trajectories/<run-id>/` without
 replacing a previous successful direct archive; `--no-archive-completed` skips
-the local trajectory download. Do not put `.env`, API keys, credentials, host
-paths, or local run output in the submitted task bundle.
+the local trajectory download. The local download keeps trajectory and
+Oracle-exception evidence but does not copy the task source again. Do not put
+`.env`, API keys, credentials, host paths, or local run output in the submitted
+task bundle.
 
 ## 9. Run the trajectory-review script
 

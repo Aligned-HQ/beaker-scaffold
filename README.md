@@ -3,6 +3,9 @@
 This repository is a starter project for a reproducible scientific-computing task in the terminal-bench style. It is deliberately editable: the files under `task/` contain a placeholder content so the container and verifier wiring can be exercised, but the placeholder task is not a publishable benchmark until all the
 placeholder content is replaced with a real scientific task.
 
+The maximum runtime for a task is 60 minutes. Keep the task workflow and its
+configured timeouts within this limit.
+
 
 
 ## Quick start
@@ -131,7 +134,9 @@ machine; task environments must still run without internet access.
    not replace a previous successful direct archive; remote partial archives are
    retained under `trajectories/<run-id>/` in the same layout. Remote runs print
    Workbench state changes, Oracle and per-agent trial counts, heartbeats,
-   result summaries, and trajectory-download progress. Use
+   result summaries, and trajectory-download progress. Remote downloads retain
+   only trajectory and Oracle-exception evidence; the task source is not copied
+   into the local archive. Use
    `--remote-progress-interval-sec SECONDS` to change the remote heartbeat
    interval (30 seconds by default). Ctrl-C requests remote cancellation by
    default; use `--no-cancel-on-interrupt` to leave the server run running.
