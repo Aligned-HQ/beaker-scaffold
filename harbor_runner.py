@@ -189,6 +189,7 @@ REMOTE_TRAJECTORY_ARCHIVE_SCOPE = "trajectories-only"
 REMOTE_EXECUTION_POLICY_ID = "scientific-offline-v1"
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
+REMOTE_TRANSFER_TIMEOUT_SECONDS = 30 * 60
 LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 ORACLE_SPINNER_FRAMES = ("|", "/", "-", "\\")
 REMOTE_AGENT_CONFIGS = {
@@ -694,7 +695,7 @@ def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
     request_body = UploadProgressReader(archive, report)
     request = urllib.request.Request(url, data=request_body, headers=request_headers, method="PUT")
     try:
-        with urllib.request.urlopen(request, timeout=120.0) as response:
+        with urllib.request.urlopen(request, timeout=REMOTE_TRANSFER_TIMEOUT_SECONDS) as response:
             if response.status < 200 or response.status >= 300:
                 raise RemoteClientError(response.status, "upload_failed", "The task bundle upload failed.")
         if progress is not None and progress_task is not None:
@@ -875,8 +876,8 @@ REMOTE_STATE_MESSAGES = {
     "ORACLE_RUNNING": "Oracle is running; agent jobs wait for a passing Oracle result",
     "ORACLE_FAILED": "Oracle did not meet the pass threshold; agent jobs were not started",
     "ORACLE_EXCEPTION": "Oracle finished with an exception",
-    "AGENTS_QUEUED": "Oracle passed; agent jobs are queued",
-    "AGENTS_RUNNING": "agent jobs are running; Workbench will publish trial counts as the executor reports them",
+    "AGENTS_QUEUED": "Oracle passed; agent jobs are starting",
+    "AGENTS_RUNNING": "agent jobs are RUNNING; Workbench will publish trial counts as the executor reports them",
     "FINALIZING": "execution results are being collected and the trajectory archive is being built",
     "COMPLETE": "all requested execution work is complete",
     "CANCELED": "run cancellation was requested",
@@ -1020,7 +1021,10 @@ def remote_progress_table(
         exceptions = remote_count(agent.get("exception_count"))
         agent_name = str(agent.get("agent") or agent_id)
         display_name = REMOTE_AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
-        agent_status = f"{agent.get('state', 'UNKNOWN')} · {finished}/{expected}"
+        agent_state = str(agent.get('state', 'UNKNOWN'))
+        if state == "AGENTS_RUNNING" and agent_state == "QUEUED":
+            agent_state = "RUNNING"
+        agent_status = f"{agent_state} · {finished}/{expected}"
         if exceptions:
             agent_status += f" · {exceptions} exception"
         table.add_row(display_name, str(passed), str(failed), agent_status)
@@ -1070,9 +1074,12 @@ def remote_progress_plain_lines(
         if agent is None:
             lines.append(f"  {agent_id}: NOT REPORTED")
             continue
+        agent_state = str(agent.get('state', 'UNKNOWN'))
+        if state == "AGENTS_RUNNING" and agent_state == "QUEUED":
+            agent_state = "RUNNING"
         lines.append(
             f"  {REMOTE_AGENT_DISPLAY_NAMES.get(str(agent.get('agent') or agent_id), str(agent.get('agent') or agent_id))}: "
-            f"{agent.get('state', 'UNKNOWN')} "
+            f"{agent_state} "
             f"{remote_count(agent.get('finished_trials'))}/{remote_count(agent.get('expected_trials'))} "
             f"pass={remote_count(agent.get('pass_count'))} fail={remote_count(agent.get('fail_count'))}",
         )
@@ -1437,7 +1444,10 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
         return destination
     print(f"trajectory archive: downloading {size_bytes} bytes", flush=True)
     try:
-        with urllib.request.urlopen(urllib.request.Request(download_url, method="GET"), timeout=120.0) as response:
+        with urllib.request.urlopen(
+            urllib.request.Request(download_url, method="GET"),
+            timeout=REMOTE_TRANSFER_TIMEOUT_SECONDS,
+        ) as response:
             content_length = response.headers.get("Content-Length")
             if content_length is not None:
                 try:
