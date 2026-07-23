@@ -142,7 +142,7 @@ python3 -m pip install -r requirements.txt
    `trajectories/gemini-cli/`, and `trajectories/summary.md`. Partial runs do
    not replace a previous successful direct archive; remote partial archives are
    retained under `trajectories/<run-id>/` in the same layout. Remote runs print
-   Workbench state changes, Oracle and per-agent trial counts, heartbeats,
+   one live Workbench progress table with Oracle and per-agent trial counts,
    result summaries, and trajectory-download progress. Remote downloads retain
    only the server's explicitly marked trajectory-only artifact; on success the
    client promotes it to the same provider-directory layout and writes the
@@ -153,7 +153,7 @@ python3 -m pip install -r requirements.txt
    opening the download URL. If the service fails before creating any agent
    trials, the runner saves status/results evidence and skips the large archive
    download. Use
-   `--remote-progress-interval-sec SECONDS` to change the remote heartbeat
+   `--remote-progress-interval-sec SECONDS` to change the live table refresh
    interval (30 seconds by default). Ctrl-C requests remote cancellation by
    default; use `--no-cancel-on-interrupt` to leave the server run running.
 
