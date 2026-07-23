@@ -902,6 +902,7 @@ def check_remote_progress_reporting() -> None:
         "agents": [
             {
                 "id": "claude-opus",
+                "agent": "claude-code",
                 "state": "RUNNING",
                 "expected_trials": 9,
                 "finished_trials": 2,
@@ -909,7 +910,27 @@ def check_remote_progress_reporting() -> None:
                 "fail_count": 1,
                 "exception_count": 0,
                 "job_id": "hr_abc-claude-opus",
-            }
+            },
+            {
+                "id": "codex-gpt-5-5",
+                "agent": "codex",
+                "state": "QUEUED",
+                "expected_trials": 9,
+                "finished_trials": 0,
+                "pass_count": 0,
+                "fail_count": 0,
+                "exception_count": 0,
+            },
+            {
+                "id": "gemini-pro",
+                "agent": "gemini-cli",
+                "state": "QUEUED",
+                "expected_trials": 9,
+                "finished_trials": 0,
+                "pass_count": 0,
+                "fail_count": 0,
+                "exception_count": 0,
+            },
         ],
     }
     output = io.StringIO()
@@ -928,10 +949,40 @@ def check_remote_progress_reporting() -> None:
     rendered = output.getvalue()
     assert signature == same_signature
     assert "remote state: AGENTS_RUNNING" in rendered
-    assert "remote heartbeat: AGENTS_RUNNING" in rendered
+    assert "remote heartbeat:" not in rendered
+    assert rendered.count("remote state: AGENTS_RUNNING") == 1
     assert "server updated: 2026-07-22T12:34:56.000Z" in rendered
-    assert "agent claude-opus: RUNNING 2/9 trials" in rendered
-    assert "totals: 2/9 trials finished, 1 pass, 1 fail, 0 exception" in rendered
+    assert "Claude Code: RUNNING 2/9 pass=1 fail=1" in rendered
+    assert "Codex: QUEUED 0/9 pass=0 fail=0" in rendered
+    assert "Gemini: QUEUED 0/9 pass=0 fail=0" in rendered
+    if harbor_runner.RICH_AVAILABLE:
+        table_output = io.StringIO()
+        console = harbor_runner.Console(file=table_output, force_terminal=False)
+        console.print(harbor_runner.remote_progress_table(status, elapsed_sec=65))
+        table_rendered = table_output.getvalue()
+        assert "PASS" in table_rendered
+        assert "FAIL" in table_rendered
+        assert "STATUS" in table_rendered
+        assert "Oracle" in table_rendered
+        assert "Claude Code" in table_rendered
+        assert "Codex" in table_rendered
+        assert "Gemini" in table_rendered
+
+        class LiveCapture:
+            def __init__(self) -> None:
+                self.updates: list[tuple[object, bool]] = []
+
+            def update(self, renderable: object, *, refresh: bool = False) -> None:
+                self.updates.append((renderable, refresh))
+
+        live = LiveCapture()
+        live_output = io.StringIO()
+        with contextlib.redirect_stdout(live_output):
+            harbor_runner.print_remote_progress(status, None, live=live, spinner_index=0)
+            harbor_runner.print_remote_progress(status, signature, live=live, force=True, spinner_index=1)
+        assert live_output.getvalue() == ""
+        assert len(live.updates) == 2
+        assert all(refresh for _renderable, refresh in live.updates)
 
 
 def check_remote_upload_progress() -> None:
