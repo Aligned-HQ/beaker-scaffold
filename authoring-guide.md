@@ -9,8 +9,8 @@ The task author creates three connected pieces:
 
 1. `instruction.md` describes the scientific question, available inputs,
    constraints, and exact outputs that an agent must produce.
-2. The reference workflow in `task/solution/`—normally `solve.py`, together
-   with `solve.sh` and `process.md`—shows how an expert would solve the task.
+2. The reference workflow in `task/solution/` — normally `solve.py`, together
+   with `solve.sh` and `process.md` — shows how an expert would solve the task.
 3. The verifier in `task/tests/` checks independent, substantive properties of
    the submitted outputs.
 
@@ -361,73 +361,7 @@ for the separate verifier image.
 ## 8. Run the Harbor task runner
 
 `harbor_runner.py` runs this repository's single `task/` directory through an
-Oracle gate and then the three configured agent jobs. It has two execution
-modes: local Modal mode (`--no-remote`) and Workbench service mode. Workbench
-remote mode is the default; use `--no-remote` for a local Modal run.
-Choose one mode before starting; the credentials and cleanup behavior differ.
-
-### Local Modal run
-
-Before starting a local run, confirm that the Harbor CLI is installed and that
-the Modal CLI or Python SDK is authenticated for the account that owns the
-run. Create the provider-key entries as named Modal Secrets using the approved
-Modal workflow. The secret names—not their values—are passed to Harbor:
-
-```bash
-./harbor_runner.py task --no-remote
-# Pass the names of existing Modal Secrets; never put their values in this command.
-./harbor_runner.py task --no-remote --modal-secret openai-api-key \
-  --modal-secret anthropic-api-key --modal-secret google-api-key
-```
-
-The host Docker daemon is needed for the preceding local smoke test and for
-any Docker CLI image inspection; the Harbor task jobs in this mode run on
-Modal. `harbor_runner.py` does not invoke local Claude Code, Codex, or Gemini
-CLI processes—the Harbor agent integrations run those jobs in their execution
-environment.
-
-The Modal control-plane credential and provider credentials are separate. The
-runner does not accept a Modal token flag: Harbor/Modal reads the control-plane
-credential from the local Modal CLI/SDK configuration. `--modal-secret` adds
-the named secrets to each Oracle and agent sandbox. `--env-file`,
-`--agent-env`, and related local-only flags are available for non-secret
-configuration, but must not carry provider or Modal keys.
-
-For a normal local run, the runner:
-
-1. Validates the source task's Modal contract: the source must declare
-   `[environment].allow_internet = false`, and the runtime and verifier
-   Dockerfiles (or prebuilt image) must be Linux/amd64.
-2. Clears the contents of `harbor-jobs/` for a fresh run. Use
-   `--no-remote --resume` with the printed run ID to preserve and resume an
-   interrupted run; `--no-remote --dry-run` and `--no-remote --archive-only`
-   also preserve existing job output.
-3. Creates two immutable task snapshots under `harbor-jobs/`: an offline
-   Oracle snapshot and a separate agent snapshot whose generated metadata has
-   `allow_internet = true`. The source `task/` directory is not changed.
-4. Runs one Oracle attempt first, with a default concurrency of 1. Agent jobs
-   start only when the Oracle finishes without an exception and meets the
-   default reward threshold of `1.0`.
-5. Starts the default Claude Code, Codex, and Gemini CLI Harbor jobs. Each job
-   runs 3 attempts with concurrency 3 by default, so the standard single-task
-   campaign requests 9 trials per agent (27 agent trials total). The three
-   local Harbor job processes run concurrently by default. Use `--repeats`,
-   `--n-concurrent`, `--default-concurrency`, or `--local-concurrency` only
-   when you intentionally want a different campaign shape.
-
-The Oracle shows a terminal spinner when attached to a TTY. Local agent
-progress is printed in a stable agent order every 30 seconds by default; use
-`--progress-interval-sec` to change or disable it. Each run gets a random
-Modal App name and an ownership manifest at
-`harbor-jobs/<run-id>.modal-run.json`. The Oracle and agent jobs for that run
-share only that app, so cleanup does not stop another user's app.
-
-On normal completion, Ctrl-C, or SIGTERM, the default
-`--shutdown-modal` behavior stops this run's owned Modal App after local Harbor
-processes are stopped. Do not use `--no-shutdown-modal` in a shared workspace
-unless another owner is responsible for cleanup. A hard kill or host power
-loss cannot execute local cleanup, so Modal/Harbor lifetime limits remain the
-final safety net.
+Oracle gate (runs your own solve.py and the tests) and then the three configured agent jobs.
 
 When the Oracle and every agent trial finish successfully without job exits or
 trial exceptions, the runner writes `harbor-jobs/<run-id>.summary.json` and
@@ -439,41 +373,6 @@ trajectory archive for inspection and do not replace a previous successful
 direct archive. If the Oracle fails, the agent jobs are not started; inspect
 the Oracle gate summary or runner log printed at the end.
 
-### Workbench service run
-
-Remote mode uploads only the task bundle to the Workbench Harbor service. It
-does not use local `--modal-secret`, `--env-file`, `--agent-env`, verifier or
-environment kwargs, agent kwargs, or artifact overrides; the service owns the
-Modal/provider secret configuration and execution policy. The service accepts
-the approved Claude, Codex, and Gemini configurations and enforces its trial
-limit. The client sends the server-approved `scientific-offline-v1` policy;
-Workbench keeps `[environment].allow_internet = false` for the Oracle and
-creates an agent-phase copy with `allow_internet = true` from the same upload.
-
-Create the local environment file before invoking the default remote mode. The
-runner loads `.env` automatically:
-
-```bash
-cp .env.example .env
-# Edit .env and paste WORKBENCH_RUNNER_TOKEN from Workbench → Settings → Access token.
-./harbor_runner.py task
-```
-
-The client sends the token as a bearer credential to Workbench, uploads a
-bounded tar.gz task bundle, polls the run state, and prints Oracle/agent trial
-counts and 30-second heartbeats. It downloads and validates the trajectory
-archive when the service publishes it. Ctrl-C requests remote cancellation by
-default; use `--no-cancel-on-interrupt` to leave the server run running. Use `--resume`
-with the same run ID and local `harbor-jobs/` state to continue a remote
-submission or monitor it again. On a successful remote run, the client
-promotes the downloaded archive to the same direct `trajectories/` layout used
-by local runs. Partial remote runs remain under `trajectories/<run-id>/` without
-replacing a previous successful direct archive; `--no-archive-completed` skips
-the local trajectory download. The local download keeps trajectory and
-Oracle-exception evidence but does not copy the task source again. Do not put
-`.env`, API keys, credentials, host paths, or local run output in the submitted
-task bundle.
-
 ## 9. Run the trajectory-review script
 
 After the Harbor campaign completes, review the archived trajectory:
@@ -484,7 +383,7 @@ After the Harbor campaign completes, review the archived trajectory:
 
 The trajectory review distinguishes genuine scientific failures from structural
 task bugs, prompt/test mismatches, tolerance problems, missing keys, and other
-clerical issues. Keep the complete trajectory archive with the submission.
+clerical issues. If this fails you must update the task, rerun the harbor_runner and return the trajectory review.
 
 Use the trajectory results to apply the difficulty gate: the average Claude,
 Codex, and Gemini pass rate must be below 50%, ignoring the Oracle. If it is
@@ -499,10 +398,7 @@ Run the final strict static check after the trajectory review:
 ```bash
 python3 scripts/validate_scaffold.py --strict
 ```
-
-The setup check in step 2 does not run scaffold contract validation. Strict mode
-also rejects scaffold markers and requires real input data or a checked-in
-deterministic generator. Resolve every failure before handoff.
+Resolve every failure before handoff.
 
 ## 11. Verify the final handoff
 
@@ -533,6 +429,6 @@ results under `harbor-jobs/` and requires the average Claude/Codex/Gemini
 pass rate to be strictly below 50%; Oracle is ignored. A rate of 50% or higher
 means the task must be made harder and rerun before it can be packaged.
 Remove generated caches, check that all intended inputs are tracked, and
-inspect the final diff. Upload the resulting `submission/` directory to
-Workbench. If a non-specialist cannot tell what a successful result means,
-improve the task README and metadata rather than adding more test code.
+inspect the final diff.
+
+Upload the resulting `submission/` directory to Workbench in the task you claimed.
