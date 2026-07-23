@@ -39,6 +39,13 @@ Make, and ripgrep using the package source approved for your workstation. Start
 the Docker daemon before continuing. These downloads are for the authoring
 machine; task environments must still run without internet access.
 
+The runner uses Rich for terminal panels, tables, and transfer progress. Install
+its pinned host-side dependency with:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 3. Edit `task/instruction.md`, `task/task.toml`, `task/environment/`,
    `task/solution/`, and `task/tests/`. Keep the prompt, artifacts, solver, and
    verifier as one contract.
@@ -124,7 +131,9 @@ machine; task environments must still run without internet access.
    `scientific-offline-v1` execution policy. Workbench keeps the submitted
    `[environment].allow_internet = false` value for the Oracle, then creates an
    agent-phase snapshot with `allow_internet = true`; no second task upload is
-   needed and the source `task.toml` is not changed.
+   needed and the source `task.toml` is not changed. The terminal shows a Rich
+   transfer bar while the bundle is uploaded, followed by structured run and agent
+   progress panels.
 
    Local runs show an Oracle spinner in a terminal and print an ordered agent
    progress scoreboard every 30 seconds by default. On a successful,
@@ -135,8 +144,15 @@ machine; task environments must still run without internet access.
    retained under `trajectories/<run-id>/` in the same layout. Remote runs print
    Workbench state changes, Oracle and per-agent trial counts, heartbeats,
    result summaries, and trajectory-download progress. Remote downloads retain
-   only trajectory and Oracle-exception evidence; the task source is not copied
-   into the local archive. Use
+   only the server's explicitly marked trajectory-only artifact; on success the
+   client promotes it to the same provider-directory layout and writes the
+   summary locally after fetching `/results`. The task
+   source, jobs, and runner logs are never downloaded. Nested `exception.txt`
+   files from Oracle and agent trial directories are retained alongside their
+   run evidence. The client refuses legacy/full archive manifests before
+   opening the download URL. If the service fails before creating any agent
+   trials, the runner saves status/results evidence and skips the large archive
+   download. Use
    `--remote-progress-interval-sec SECONDS` to change the remote heartbeat
    interval (30 seconds by default). Ctrl-C requests remote cancellation by
    default; use `--no-cancel-on-interrupt` to leave the server run running.

@@ -75,6 +75,67 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeRemainingColumn,
+        TransferSpeedColumn,
+    )
+    from rich.table import Table
+    from rich.text import Text
+except ImportError:  # pragma: no cover - exercised only on minimal host installs
+    Console = None  # type: ignore[assignment,misc]
+    Panel = None  # type: ignore[assignment]
+    Progress = None  # type: ignore[assignment,misc]
+    BarColumn = DownloadColumn = SpinnerColumn = TaskProgressColumn = None  # type: ignore[assignment]
+    TextColumn = TimeRemainingColumn = TransferSpeedColumn = None  # type: ignore[assignment]
+    Table = Text = None  # type: ignore[assignment,misc]
+
+
+RICH_AVAILABLE = Console is not None
+
+
+def runner_console(stream: object | None = None, *, stderr: bool = False) -> object | None:
+    """Return a Rich console bound to the requested stream when Rich is installed."""
+    if not RICH_AVAILABLE:
+        return None
+    if stream is None:
+        return Console(stderr=stderr, soft_wrap=True)
+    return Console(file=stream, soft_wrap=True)
+
+
+def _rich_text(value: str) -> object:
+    """Keep service-provided text from being interpreted as Rich markup."""
+    return Text(value) if RICH_AVAILABLE else value
+
+
+def print_runner_panel(
+    title: str,
+    lines: list[str],
+    *,
+    stream: object | None = None,
+    border_style: str = "cyan",
+) -> None:
+    """Print a compact structured block, with a plain-text fallback."""
+    console = runner_console(stream)
+    if console is None:
+        for line in lines:
+            print(line, file=stream if stream is not None else sys.stdout, flush=True)
+        return
+
+    body = Table.grid(padding=(0, 1))
+    body.add_column()
+    for line in lines:
+        body.add_row(_rich_text(line))
+    console.print(Panel(body, title=title, border_style=border_style))
+
 
 # One task has three default attempts, so larger concurrency would not add
 # useful parallelism for the standard campaign.
@@ -122,6 +183,7 @@ REMOTE_ACTIVE_STATES = {
 }
 REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
 REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
+REMOTE_TRAJECTORY_ARCHIVE_SCOPE = "trajectories-only"
 REMOTE_EXECUTION_POLICY_ID = "scientific-offline-v1"
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
@@ -552,19 +614,98 @@ def remote_json_request(
         raise RemoteClientError(0, "network", "Could not reach the Workbench Harbor service.") from error
 
 
+class UploadProgressReader:
+    """File-like request body that reports bytes as urllib hands them to HTTP."""
+
+    def __init__(self, data: bytes, on_read: Callable[[int], None]) -> None:
+        self._data = memoryview(data)
+        self._position = 0
+        self._on_read = on_read
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        if self._position >= len(self._data):
+            return b""
+        if size is None or size < 0:
+            end = len(self._data)
+        else:
+            end = min(len(self._data), self._position + size)
+        chunk = self._data[self._position:end].tobytes()
+        self._position = end
+        self._on_read(self._position)
+        return chunk
+
+
 def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
     request_headers = {str(key): str(value) for key, value in headers.items()}
+    if not any(key.lower() == "content-length" for key in request_headers):
+        # Explicitly preserve a fixed-length PUT. Without this header urllib
+        # falls back to chunked transfer for a file-like body, which many
+        # signed object-storage URLs reject.
+        request_headers["Content-Length"] = str(len(archive))
+
+    console = runner_console()
+    progress = None
+    progress_task = None
+    uploaded = 0
+    fallback_next_report = max(1, len(archive) // 20)
+
+    def report(completed: int) -> None:
+        nonlocal fallback_next_report, uploaded
+        uploaded = completed
+        if progress is not None and progress_task is not None:
+            progress.update(progress_task, completed=completed)
+        elif not RICH_AVAILABLE:
+            # Keep redirected logs useful on a host where Rich is not present.
+            if completed >= fallback_next_report or completed == len(archive):
+                print(
+                    f"remote upload: {completed}/{len(archive)} bytes "
+                    f"({100.0 * completed / len(archive):.1f}%)",
+                    flush=True,
+                )
+                fallback_next_report = min(
+                    len(archive), fallback_next_report + max(1, len(archive) // 20)
+                )
+
+    if RICH_AVAILABLE and console is not None:
+        progress = Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=bool(getattr(console, "is_terminal", False)),
+            refresh_per_second=10,
+        )
+        progress_task = progress.add_task("Uploading task bundle", total=len(archive))
+        progress.start()
+    else:
+        print(f"remote upload: uploading {len(archive)} bytes", flush=True)
+
     # A signed URL is the authorization for this one object. The Workbench
     # bearer token is intentionally not sent to Storage.
-    request = urllib.request.Request(url, data=archive, headers=request_headers, method="PUT")
+    request_body = UploadProgressReader(archive, report)
+    request = urllib.request.Request(url, data=request_body, headers=request_headers, method="PUT")
     try:
         with urllib.request.urlopen(request, timeout=120.0) as response:
             if response.status < 200 or response.status >= 300:
                 raise RemoteClientError(response.status, "upload_failed", "The task bundle upload failed.")
+        if progress is not None and progress_task is not None:
+            progress.update(progress_task, completed=len(archive))
+        elif not RICH_AVAILABLE and uploaded != len(archive):
+            report(len(archive))
     except urllib.error.HTTPError as error:
         raise RemoteClientError(error.code, "upload_failed", "The task bundle upload failed.") from None
     except (urllib.error.URLError, TimeoutError) as error:
         raise RemoteClientError(0, "network", "The task bundle upload could not reach Storage.") from error
+    finally:
+        if progress is not None:
+            progress.stop()
 
 
 def remote_archive_name_allowed(path: Path, root: Path) -> bool:
@@ -831,13 +972,11 @@ def print_remote_progress(
     if changed or force:
         label = "remote state" if changed else "remote heartbeat"
         message = REMOTE_STATE_MESSAGES.get(str(state), "waiting for the service to report progress")
-        print(
-            f"{label}: {state} | {message} | elapsed {format_elapsed(elapsed_sec)}",
-            flush=True,
-        )
+        heading = f"{label}: {state} | {message} | elapsed {format_elapsed(elapsed_sec)}"
+        detail_lines: list[str] = []
         updated_at = status.get("updated_at")
         if updated_at:
-            print(f"  server updated: {updated_at}", flush=True)
+            detail_lines.append(f"  server updated: {updated_at}")
 
         oracle = status.get("oracle") if isinstance(status.get("oracle"), dict) else {}
         oracle_state = oracle.get("state", "INCOMPLETE")
@@ -851,7 +990,7 @@ def print_remote_progress(
         oracle_exception = oracle.get("exception")
         if isinstance(oracle_exception, dict) and oracle_exception.get("type"):
             oracle_text += f" exception={oracle_exception.get('type')}"
-        print(f"  {oracle_text}", flush=True)
+        detail_lines.append(f"  {oracle_text}")
 
         agents = status.get("agents") if isinstance(status.get("agents"), list) else []
         total_expected = 0
@@ -877,32 +1016,43 @@ def print_remote_progress(
             agent_meta = ""
             if agent.get("agent") or agent.get("model"):
                 agent_meta = f" [{agent.get('agent', '?')} / {agent.get('model', '?')}]"
-            print(
+            detail_lines.append(
                 f"  agent {agent.get('id', 'unknown')}{agent_meta}: "
                 f"{agent.get('state', 'UNKNOWN')} "
                 f"{finished}/{expected} trials, {passed} pass, {failed} fail, "
                 f"{exceptions} exception{job_suffix}",
-                flush=True,
             )
         if agents:
-            print(
+            detail_lines.append(
                 f"  totals: {total_finished}/{total_expected} trials finished, "
                 f"{total_passed} pass, {total_failed} fail, {total_exceptions} exception",
-                flush=True,
             )
 
         terminal_reason = status.get("terminal_reason")
         if terminal_reason:
-            print(f"  terminal reason: {terminal_reason}", flush=True)
+            detail_lines.append(f"  terminal reason: {terminal_reason}")
         error = status.get("error")
         if isinstance(error, dict) and (error.get("type") or error.get("message")):
             detail = error.get("message") or error.get("type")
-            print(f"  service error: {detail}", flush=True)
+            detail_lines.append(f"  service error: {detail}")
         validation_errors = status.get("validation_errors")
         if isinstance(validation_errors, list) and validation_errors:
-            print("  validation errors:", flush=True)
+            detail_lines.append("  validation errors:")
             for validation_error in validation_errors:
-                print(f"    - {validation_error}", flush=True)
+                detail_lines.append(f"    - {validation_error}")
+
+        console = runner_console()
+        if console is not None:
+            details = Table.grid(padding=(0, 1))
+            details.add_column()
+            for detail_line in detail_lines:
+                details.add_row(_rich_text(detail_line))
+            console.print(_rich_text(heading))
+            console.print(Panel(details, title="Remote progress", border_style="cyan"))
+        else:
+            print(heading, flush=True)
+            for detail_line in detail_lines:
+                print(detail_line, flush=True)
     return signature
 
 
@@ -986,6 +1136,9 @@ def poll_remote_status(
 REMOTE_EVIDENCE_FILE_NAMES = {
     "summary.md",
     "summary.json",
+    "remote-error.json",
+    "remote-results.json",
+    "remote-status.json",
     "oracle-exception.json",
     "oracle-exception.txt",
     "exception.json",
@@ -995,12 +1148,21 @@ REMOTE_EVIDENCE_FILE_NAMES = {
 
 
 def remote_archive_member_is_evidence(normalized: str, run_id: str) -> bool:
-    """Keep trajectory and shallow run/Oracle evidence, not task source files."""
+    """Keep trajectory and exception evidence, not task source files.
+
+    Workbench has used more than one layout for trial artifacts. Trajectory
+    files are identified by their ``trajectories/`` directory, but an
+    ``exception.txt`` can also be nested directly under an Oracle or agent
+    run. Preserve that exact evidence filename at any depth without allowing
+    the rest of the submitted task tree through the archive filter.
+    """
     relative = posixpath.relpath(normalized, run_id)
     if relative == ".":
         return True
     parts = relative.split("/")
-    if "trajectories" in parts:
+    if parts[-1].lower() == "exception.txt":
+        return True
+    if any(part.lower() == "trajectories" for part in parts):
         return True
     if len(parts) <= 2 and parts[-1].lower() in REMOTE_EVIDENCE_FILE_NAMES:
         return True
@@ -1117,6 +1279,13 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
     size_bytes = manifest.get("size_bytes")
     root_directory = manifest.get("root_directory")
     expected_entries = manifest.get("entry_count")
+    archive_scope = manifest.get("archive_scope")
+    if archive_scope != REMOTE_TRAJECTORY_ARCHIVE_SCOPE:
+        raise RemoteClientError(
+            0,
+            "archive_scope",
+            "Refusing to download an archive that is not explicitly trajectory-only.",
+        )
     try:
         download_parts = urllib.parse.urlsplit(download_url) if isinstance(download_url, str) else None
     except ValueError:
@@ -1188,8 +1357,8 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{sha256}\n", encoding="utf-8")
     print(
-        f"trajectory archive: extracted trajectory/exception evidence "
-        f"({count} archive entries verified) to {destination}",
+        f"trajectory archive: verified server archive ({count} entries); "
+        f"retained trajectory/exception evidence at {destination}",
         flush=True,
     )
     return destination
@@ -1398,6 +1567,68 @@ def write_remote_oracle_exception_evidence(
         raise RemoteClientError(0, "archive_write", "Could not save the Oracle exception evidence.") from error
 
 
+def remote_results_have_agent_trials(results: dict[str, object]) -> bool:
+    """Return whether the service produced any agent trial evidence."""
+    summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+    if remote_count(summary.get("agent_trials_finished")) > 0:
+        return True
+    trials = results.get("trials")
+    return isinstance(trials, list) and any(isinstance(trial, dict) for trial in trials)
+
+
+def remote_error_has_no_agent_trials(
+    status: dict[str, object],
+    results: dict[str, object],
+) -> bool:
+    """Identify terminal service errors that cannot have agent trajectories."""
+    return status.get("state") == "ERROR" and not remote_results_have_agent_trials(results)
+
+
+def write_remote_error_evidence(
+    base_dir: Path,
+    run_id: str,
+    status: dict[str, object],
+    results: dict[str, object],
+) -> Path:
+    """Save compact failure evidence without copying the submitted task."""
+    if not re.fullmatch(r"hr_[A-Za-z0-9_-]{12,100}", run_id):
+        raise RemoteClientError(0, "archive_write", "The remote run id is invalid.")
+    destination = base_dir.expanduser().resolve() / run_id
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise RemoteClientError(0, "archive_write", "The local trajectory evidence path is not a directory.")
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        (destination / "remote-status.json").write_text(
+            json.dumps(status, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (destination / "remote-results.json").write_text(
+            json.dumps(results, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        error = status.get("error") if isinstance(status.get("error"), dict) else {}
+        summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+        error_message = error.get("message") or error.get("type") or "unknown service error"
+        summary_text = "\n".join(
+            (
+                f"# Harbor run {run_id}",
+                "",
+                f"State: {status.get('state', 'ERROR')}",
+                f"Terminal reason: {status.get('terminal_reason') or 'unknown'}",
+                f"Service error: {error_message}",
+                f"Oracle: {(results.get('oracle') or {}).get('verdict', 'INCOMPLETE') if isinstance(results.get('oracle'), dict) else 'INCOMPLETE'}",
+                f"Agent trials: {remote_count(summary.get('agent_trials_finished'))}/{remote_count(summary.get('agent_trials_expected'))}",
+                "",
+                "No agent trial trajectories were produced; the remote task archive was not downloaded.",
+                "",
+            )
+        )
+        (destination / "summary.md").write_text(summary_text, encoding="utf-8")
+    except (OSError, TypeError, ValueError) as error:
+        raise RemoteClientError(0, "archive_write", "Could not save remote error evidence.") from error
+    return destination
+
+
 def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> int:
     state = status.get("state")
     if state == "ORACLE_FAILED":
@@ -1424,17 +1655,15 @@ def print_remote_results(
     oracle_exception = oracle.get("exception")
     if isinstance(oracle_exception, dict) and oracle_exception.get("type"):
         oracle_text += f" exception={oracle_exception.get('type')}"
-    print(f"remote results: {oracle_text}", flush=True)
 
     summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
     finished = remote_count(summary.get("agent_trials_finished"))
     expected = remote_count(summary.get("agent_trials_expected"))
-    print(
+    trial_summary = (
         f"  agent trials: {finished}/{expected} finished, "
         f"{remote_count(summary.get('pass_count'))} pass, "
         f"{remote_count(summary.get('fail_count'))} fail, "
-        f"{remote_count(summary.get('exception_count'))} exception",
-        flush=True,
+        f"{remote_count(summary.get('exception_count'))} exception"
     )
 
     trials = results.get("trials") if isinstance(results.get("trials"), list) else []
@@ -1453,15 +1682,127 @@ def print_remote_results(
             agent_id,
         ),
     )
+    console = runner_console()
+    if console is None:
+        print(f"remote results: {oracle_text}", flush=True)
+        print(trial_summary, flush=True)
+        for agent_id in ordered_ids:
+            counts = by_agent[agent_id]
+            print(
+                f"  {agent_id}: {counts.get('PASS', 0)} pass, "
+                f"{counts.get('FAIL', 0)} fail, "
+                f"{counts.get('EXCEPTION', 0)} exception, "
+                f"{counts.get('INCOMPLETE', 0)} incomplete",
+                flush=True,
+            )
+        return
+
+    console.print(_rich_text(f"remote results: {oracle_text}"))
+    console.print(_rich_text(trial_summary))
+    table = Table(title="Agent verdicts", show_header=True, header_style="bold cyan")
+    table.add_column("Agent", style="bold")
+    table.add_column("Pass", justify="right")
+    table.add_column("Fail", justify="right")
+    table.add_column("Exception", justify="right")
+    table.add_column("Incomplete", justify="right")
     for agent_id in ordered_ids:
         counts = by_agent[agent_id]
-        print(
-            f"  {agent_id}: {counts.get('PASS', 0)} pass, "
-            f"{counts.get('FAIL', 0)} fail, "
-            f"{counts.get('EXCEPTION', 0)} exception, "
-            f"{counts.get('INCOMPLETE', 0)} incomplete",
-            flush=True,
+        table.add_row(
+            str(agent_id),
+            str(counts.get("PASS", 0)),
+            str(counts.get("FAIL", 0)),
+            str(counts.get("EXCEPTION", 0)),
+            str(counts.get("INCOMPLETE", 0)),
         )
+    console.print(table)
+
+
+def remote_agent_name(agent_id: str) -> str:
+    for (agent, _model), known_id in REMOTE_AGENT_CONFIGS.items():
+        if known_id == agent_id:
+            return agent
+    return agent_id
+
+
+def write_remote_results_summary(
+    destination: Path,
+    run_id: str,
+    task_name: str,
+    state: object,
+    results: dict[str, object],
+    agent_order: tuple[str, ...],
+) -> None:
+    """Write local review summaries from /results, outside the downloaded archive."""
+    trials = results.get("trials") if isinstance(results.get("trials"), list) else []
+    by_agent: dict[str, dict[str, object]] = {
+        agent_id: {"finished": 0, "passed": 0, "failed": 0, "exceptions": 0, "rewards": []}
+        for agent_id in agent_order
+    }
+    for trial in trials:
+        if not isinstance(trial, dict):
+            continue
+        agent_id = str(trial.get("agent_id") or "unknown")
+        stats = by_agent.setdefault(
+            agent_id,
+            {"finished": 0, "passed": 0, "failed": 0, "exceptions": 0, "rewards": []},
+        )
+        verdict = str(trial.get("verdict") or "INCOMPLETE").upper()
+        if verdict in {"PASS", "FAIL", "EXCEPTION"}:
+            stats["finished"] = int(stats["finished"]) + 1
+        if verdict == "PASS":
+            stats["passed"] = int(stats["passed"]) + 1
+        elif verdict == "FAIL":
+            stats["failed"] = int(stats["failed"]) + 1
+        elif verdict == "EXCEPTION":
+            stats["exceptions"] = int(stats["exceptions"]) + 1
+        reward = trial.get("reward")
+        if isinstance(reward, (int, float)) and not isinstance(reward, bool):
+            rewards = stats["rewards"]
+            assert isinstance(rewards, list)
+            rewards.append(float(reward))
+
+    ordered_ids = list(agent_order)
+    ordered_ids.extend(agent_id for agent_id in sorted(by_agent) if agent_id not in agent_order)
+    oracle = results.get("oracle") if isinstance(results.get("oracle"), dict) else {}
+    oracle_verdict = str(oracle.get("verdict") or "INCOMPLETE").lower()
+    oracle_reward = oracle.get("reward")
+    oracle_reward_text = format_metric(float(oracle_reward)) if isinstance(oracle_reward, (int, float)) else "-"
+    oracle_cell = f"{oracle_verdict}, reward {oracle_reward_text}"
+
+    headers = ["Task", "Oracle", *(remote_agent_name(agent_id) for agent_id in ordered_ids), "Status"]
+    separator = ["---"] * len(headers)
+    cells = [markdown_escape(task_name), oracle_cell]
+    for agent_id in ordered_ids:
+        stats = by_agent[agent_id]
+        rewards = stats["rewards"]
+        assert isinstance(rewards, list)
+        mean = sum(rewards) / len(rewards) if rewards else None
+        cell = f"{stats['passed']}/{stats['finished']} pass, mean {format_metric(mean)}"
+        if stats["exceptions"]:
+            cell += f", {stats['exceptions']} errors"
+        cells.append(cell)
+    cells.append(str(state).lower())
+    markdown = "\n".join(
+        (
+            f"# Harbor Run Summary: {run_id}",
+            "",
+            f"| {' | '.join(headers)} |",
+            f"| {' | '.join(separator)} |",
+            f"| {' | '.join(cells)} |",
+            "",
+            "Completed tasks: 1/1" if str(state) == "COMPLETE" else "Completed tasks: 0/1",
+            "",
+        )
+    )
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "summary.json").write_text(
+            json.dumps(results, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (destination / "summary.md").write_text(markdown, encoding="utf-8")
+    except (OSError, TypeError, ValueError) as error:
+        raise RemoteClientError(0, "archive_write", "Could not save the remote results summary.") from error
 
 
 def run_remote(task_root: Path, args: argparse.Namespace) -> int:
@@ -1680,6 +2021,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         remote_exit = remote_exit_code(status, results)
         manifest: dict[str, object] | None = None
         archive_destination: Path | None = None
+        archive_downloaded = False
         should_archive = bool(args.archive_completed) and status.get("state") != "ORACLE_FAILED"
         if not args.archive_completed:
             print("remote archive: skipped (--no-archive-completed)", flush=True)
@@ -1687,6 +2029,18 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         elif not should_archive:
             print(
                 f"remote archive: skipped for terminal state {status.get('state')}",
+                flush=True,
+            )
+        elif remote_error_has_no_agent_trials(status, results):
+            archive_destination = write_remote_error_evidence(
+                args.completed_trajectories_dir,
+                run_id,
+                status,
+                results,
+            )
+            print(
+                "remote archive: skipped; the service failed before producing "
+                "agent trials, so no trajectory archive was downloaded",
                 flush=True,
             )
         else:
@@ -1711,21 +2065,38 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             if manifest is None:
                 raise RemoteClientError(409, "trajectory_not_ready", "The service did not publish a trajectory archive.")
             print(
-                f"remote archive: manifest ready ({manifest.get('size_bytes', '?')} bytes, "
+                f"remote archive: trajectory-only manifest ready ({manifest.get('size_bytes', '?')} bytes, "
                 f"{manifest.get('entry_count', '?')} entries); downloading",
                 flush=True,
             )
             archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
+            archive_downloaded = True
             if remote_exit == 0:
                 archive_destination = promote_remote_trajectory_archive(
                     archive_destination,
                     args.completed_trajectories_dir,
+                )
+                write_remote_results_summary(
+                    archive_destination,
+                    run_id,
+                    task_root.name,
+                    status.get("state"),
+                    results,
+                    agent_order,
                 )
             else:
                 archive_destination = preserve_remote_trajectory_archive(
                     archive_destination,
                     args.completed_trajectories_dir,
                     task_root.name,
+                )
+                write_remote_results_summary(
+                    archive_destination,
+                    run_id,
+                    task_root.name,
+                    status.get("state"),
+                    results,
+                    agent_order,
                 )
                 if status.get("state") == "ORACLE_EXCEPTION":
                     write_remote_oracle_exception_evidence(
@@ -1740,13 +2111,16 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             "terminal_state": status.get("state"),
             "trajectory_sha256": manifest.get("sha256") if manifest else None,
             "trajectory_directory": str(archive_destination) if archive_destination else None,
-            "archive_downloaded": archive_destination is not None,
+            "archive_downloaded": archive_downloaded,
         })
         save_remote_state(service_run_path, state)
         if request_path != service_run_path:
             save_remote_state(request_path, state)
         if archive_destination is not None:
-            print(f"remote complete: trajectory archive available at {archive_destination}", flush=True)
+            if archive_downloaded:
+                print(f"remote complete: trajectory archive available at {archive_destination}", flush=True)
+            else:
+                print(f"remote complete: failure evidence available at {archive_destination}", flush=True)
         else:
             print("remote complete: no local trajectory archive", flush=True)
         return remote_exit
@@ -2718,6 +3092,16 @@ class ProgressReporter:
             self._render()
 
     def _render(self) -> None:
+        console = runner_console(self._stream)
+        if console is not None:
+            scoreboard = Table.grid(padding=(0, 1))
+            scoreboard.add_column()
+            for spec in self._specs:
+                line = self._latest.get(spec.job_name, f"waiting for {spec.label} to start")
+                scoreboard.add_row(_rich_text(f"{spec.label}: {line}"))
+            console.print(Panel(scoreboard, title="Agent progress", border_style="cyan"))
+            return
+
         print("agent progress update:", file=self._stream, flush=True)
         for spec in self._specs:
             line = self._latest.get(spec.job_name, f"waiting for {spec.label} to start")
@@ -4581,24 +4965,31 @@ def main(argv: list[str]) -> int:
     if args.oracle_sort:
         job = build_oracle_sort_job_spec(oracle_task_root, num_tasks, args)
         action = "archive-only" if args.archive_only else ("resume" if args.resume else "run")
-        print(f"run-id:      {args.run_id}")
-        print(f"action:      oracle-sort {action}")
-        print(f"backend:     {args.env}")
-        print(f"modal app:   {args.modal_app_name}")
-        print(f"run manifest:{args.modal_run_manifest}")
-        print(f"task root:   {task_root}")
+        oracle_overview = [
+            f"run-id:      {args.run_id}",
+            f"action:      oracle-sort {action}",
+            f"backend:     {args.env}",
+            f"modal app:   {args.modal_app_name}",
+            f"run manifest:{args.modal_run_manifest}",
+            f"task root:   {task_root}",
+        ]
         if oracle_snapshot_root is not None:
-            print(f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)")
-        print(f"tasks:       {num_tasks}")
-        print(f"concurrency: {args.n_concurrent or args.oracle_concurrency}")
-        print(f"threshold:   reward >= {args.pass_threshold}")
-        print(f"pass dir:    {args.oracle_pass_dir.resolve()}")
-        print(f"fail dir:    {args.oracle_fail_dir.resolve()}")
-        print(f"job:         {job.job_dir}")
-        print(f"log:         {job.runner_log}")
-        print()
-        print("command:")
-        print(redacted_command(job.command))
+            oracle_overview.append(
+                f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)"
+            )
+        oracle_overview.extend(
+            [
+                f"tasks:       {num_tasks}",
+                f"concurrency: {args.n_concurrent or args.oracle_concurrency}",
+                f"threshold:   reward >= {args.pass_threshold}",
+                f"pass dir:    {args.oracle_pass_dir.resolve()}",
+                f"fail dir:    {args.oracle_fail_dir.resolve()}",
+                f"job:         {job.job_dir}",
+                f"log:         {job.runner_log}",
+            ]
+        )
+        print_runner_panel("Oracle sort", oracle_overview)
+        print_runner_panel("Command", [redacted_command(job.command)], border_style="dim")
         if args.dry_run:
             return 0
 
@@ -4680,35 +5071,43 @@ def main(argv: list[str]) -> int:
     oracle_job = build_oracle_sort_job_spec(oracle_task_root, num_tasks, args)
 
     action = "archive-only" if args.archive_only else ("resume" if args.resume else "run")
-    print(f"run-id:    {args.run_id}")
-    print(f"action:    {action}")
-    print(f"backend:   {args.env}")
-    print(f"modal app: {args.modal_app_name}")
-    print(f"manifest:  {args.modal_run_manifest}")
-    print(f"task root: {task_root}")
+    run_overview = [
+        f"run-id:    {args.run_id}",
+        f"action:    {action}",
+        f"backend:   {args.env}",
+        f"modal app: {args.modal_app_name}",
+        f"manifest:  {args.modal_run_manifest}",
+        f"task root: {task_root}",
+    ]
     if oracle_snapshot_root is not None:
-        print(f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)")
+        run_overview.append(f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)")
     if agent_snapshot_root is not None:
-        print(f"agent snapshot:  {agent_snapshot_root} (allow_internet=true)")
-    print(f"tasks:     {num_tasks}")
-    print(f"attempts:  {args.repeats}")
-    print(
-        f"agents:    {len(agent_specs)}  "
-        f"(jobs: {len(specs)}, local concurrency: {local_concurrency})"
+        run_overview.append(f"agent snapshot:  {agent_snapshot_root} (allow_internet=true)")
+    run_overview.extend(
+        [
+            f"tasks:     {num_tasks}",
+            f"attempts:  {args.repeats}",
+            (
+                f"agents:    {len(agent_specs)}  "
+                f"(jobs: {len(specs)}, local concurrency: {local_concurrency})"
+            ),
+            f"oracle:    {oracle_job.job_dir}",
+        ]
     )
-    print(f"oracle:    {oracle_job.job_dir}")
     for spec in specs:
-        print(
+        run_overview.append(
             f"  - {spec.label:24s} -n {spec.n_concurrent:<4d} "
             f"-> {spec.num_tasks * spec.repeats} trials  [{spec.job_dir}]"
         )
+    print_runner_panel("Harbor run", run_overview)
     if args.dry_run:
-        print()
-        print("# Oracle gate")
-        print(redacted_command(oracle_job.command))
-        print("# Agent jobs (run only after Oracle passes)")
-        for spec in specs:
-            print(redacted_command(spec.command))
+        commands = [
+            "# Oracle gate",
+            redacted_command(oracle_job.command),
+            "# Agent jobs (run only after Oracle passes)",
+        ]
+        commands.extend(redacted_command(spec.command) for spec in specs)
+        print_runner_panel("Dry run commands", commands, border_style="dim")
         return 0
 
     MODAL_CLEANUP_ARMED = True

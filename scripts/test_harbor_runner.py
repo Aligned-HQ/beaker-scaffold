@@ -171,6 +171,10 @@ def check_successful_archive_uses_agent_names_and_oracle() -> None:
                 ),
                 encoding="utf-8",
             )
+            (trial_dir / "exception.txt").write_text(
+                f"{agent} exception evidence\n",
+                encoding="utf-8",
+            )
             results.append(
                 harbor_runner.JobResult(
                     agent=agent,
@@ -203,6 +207,10 @@ def check_successful_archive_uses_agent_names_and_oracle() -> None:
             ),
             encoding="utf-8",
         )
+        (oracle_trial_dir / "exception.txt").write_text(
+            "oracle exception evidence\n",
+            encoding="utf-8",
+        )
 
         summary_path = harbor_runner.write_summary(jobs_dir, original_task, run_id, results)
         markdown_path = harbor_runner.write_markdown_summary(
@@ -227,6 +235,13 @@ def check_successful_archive_uses_agent_names_and_oracle() -> None:
         assert moved == [destination]
         assert all((trajectory_root / agent).is_dir() for agent, _, _ in agent_specs)
         assert (trajectory_root / "oracle").is_dir()
+        assert all(
+            (trajectory_root / agent / f"{run_id}.agent__{agent}" / "exception.txt").is_file()
+            for agent, _, _ in agent_specs
+        )
+        assert (
+            trajectory_root / "oracle" / f"{run_id}.oracle__trial" / "exception.txt"
+        ).is_file()
         assert not (trajectory_root / "stale-run.marker").exists()
         trajectory_summary = trajectory_root / "summary.md"
         assert trajectory_summary.is_file()
@@ -281,6 +296,14 @@ def check_remote_partial_archive_matches_local_layout() -> None:
         source = archive / "example-task" / "trajectories"
         (source / "oracle" / "trial-0").mkdir(parents=True)
         (source / "codex" / "trial-0").mkdir(parents=True)
+        (source / "oracle" / "trial-0" / "trajectory.json").write_text(
+            "{\"oracle\": true}\n",
+            encoding="utf-8",
+        )
+        (source / "codex" / "trial-0" / "trajectory.json").write_text(
+            "{\"agent\": true}\n",
+            encoding="utf-8",
+        )
         (source / "summary.md").write_text("# partial remote summary\n", encoding="utf-8")
         (destination / ".hr_remote-run.sha256").write_text("sha256:test\n", encoding="utf-8")
         (destination / "previous-success").mkdir(parents=True)
@@ -295,6 +318,8 @@ def check_remote_partial_archive_matches_local_layout() -> None:
         assert (archive / "summary.md").is_file()
         assert (archive / "example-task" / "trajectories" / "oracle").is_dir()
         assert (archive / "example-task" / "trajectories" / "codex").is_dir()
+        assert (archive / "example-task" / "trajectories" / "oracle" / "trial-0" / "trajectory.json").is_file()
+        assert (archive / "example-task" / "trajectories" / "codex" / "trial-0" / "trajectory.json").is_file()
         assert (destination / "previous-success").is_dir()
         assert not (destination / ".hr_remote-run.sha256").exists()
 
@@ -322,6 +347,40 @@ def check_remote_oracle_exception_evidence_is_preserved() -> None:
         assert not (destination / ".hr_remote-run.sha256").exists()
 
 
+def check_remote_error_without_agent_trials_keeps_compact_evidence() -> None:
+    status = {
+        "state": "ERROR",
+        "terminal_reason": "EXECUTION_ERROR",
+        "error": {
+            "type": "TypeError",
+            "message": "Body is unusable: Body has already been read",
+        },
+    }
+    results = {
+        "oracle": {"verdict": "PASS", "reward": 1},
+        "summary": {
+            "agent_trials_expected": 27,
+            "agent_trials_finished": 0,
+            "exception_count": 0,
+        },
+        "trials": [],
+    }
+    assert harbor_runner.remote_error_has_no_agent_trials(status, results)
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-error-evidence-test-") as raw:
+        destination = harbor_runner.write_remote_error_evidence(
+            Path(raw) / "trajectories",
+            "hr_remote-error",
+            status,
+            results,
+        )
+        assert sorted(path.name for path in destination.iterdir()) == [
+            "remote-results.json",
+            "remote-status.json",
+            "summary.md",
+        ]
+        assert "archive was not downloaded" in (destination / "summary.md").read_text(encoding="utf-8")
+
+
 def check_remote_archive_extracts_evidence_without_task_files() -> None:
     run_id = "hr_remote-extract"
     with tempfile.TemporaryDirectory(prefix="beaker-remote-evidence-extract-test-") as raw:
@@ -335,6 +394,12 @@ def check_remote_archive_extracts_evidence_without_task_files() -> None:
         (task_root / "solution").mkdir()
         (task_root / "solution" / "solve.py").write_text("private solution\n", encoding="utf-8")
         (trajectories / "trajectory.json").write_text("{}\n", encoding="utf-8")
+        oracle_exception = task_root / "oracle" / "trial-0" / "exception.txt"
+        oracle_exception.parent.mkdir(parents=True)
+        oracle_exception.write_text("oracle exception\n", encoding="utf-8")
+        agent_exception = task_root / "agent-runs" / "codex" / "trial-1" / "exception.txt"
+        agent_exception.parent.mkdir(parents=True)
+        agent_exception.write_text("agent exception\n", encoding="utf-8")
         (task_root / "summary.md").write_text("summary\n", encoding="utf-8")
 
         archive_bytes = io.BytesIO()
@@ -350,10 +415,46 @@ def check_remote_archive_extracts_evidence_without_task_files() -> None:
 
         assert count > 1
         assert (destination / "example-task" / "trajectories" / "codex" / "trial-1" / "trajectory.json").is_file()
+        assert (destination / "example-task" / "oracle" / "trial-0" / "exception.txt").read_text(encoding="utf-8") == "oracle exception\n"
+        assert (destination / "example-task" / "agent-runs" / "codex" / "trial-1" / "exception.txt").read_text(encoding="utf-8") == "agent exception\n"
         assert (destination / "example-task" / "summary.md").is_file()
         assert not (destination / "example-task" / "task.toml").exists()
         assert not (destination / "example-task" / "instruction.md").exists()
         assert not (destination / "example-task" / "solution").exists()
+
+
+def check_remote_archive_refuses_non_trajectory_manifest() -> None:
+    original_urlopen = harbor_runner.urllib.request.urlopen
+    called = False
+
+    def fail_if_downloaded(*_args: object, **_kwargs: object) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("the client attempted to download a non-trajectory archive")
+
+    manifest = {
+        "download_url": "https://storage.example/full-task.tar.gz",
+        "sha256": "sha256:" + "a" * 64,
+        "size_bytes": 123,
+        "root_directory": "hr_remote-scope",
+        "entry_count": 10,
+        "archive_scope": "full-run",
+    }
+    harbor_runner.urllib.request.urlopen = fail_if_downloaded  # type: ignore[assignment]
+    try:
+        try:
+            harbor_runner.download_remote_archive(
+                Path("/tmp/harbor-runner-scope-test"),
+                "hr_remote-scope",
+                manifest,
+            )
+        except harbor_runner.RemoteClientError as error:
+            assert error.code == "archive_scope"
+        else:
+            raise AssertionError("the client accepted a non-trajectory archive manifest")
+    finally:
+        harbor_runner.urllib.request.urlopen = original_urlopen
+    assert not called
 
 
 def check_remote_archive_flag_matches_local_behavior() -> None:
@@ -467,7 +568,11 @@ def check_remote_oracle_exception_downloads_archive() -> None:
                     "summary": {"exception_count": 1},
                 }, {}
             if method == "GET" and url.endswith("/trajectories"):
-                return 200, {"size_bytes": 1, "entry_count": 1}, {}
+                return 200, {
+                    "size_bytes": 1,
+                    "entry_count": 1,
+                    "archive_scope": harbor_runner.REMOTE_TRAJECTORY_ARCHIVE_SCOPE,
+                }, {}
             raise AssertionError(f"unexpected remote request: {method} {url}")
 
         def fake_poll_remote_status(*args: object, **kwargs: object) -> dict[str, object]:
@@ -528,6 +633,100 @@ def check_remote_oracle_exception_downloads_archive() -> None:
             harbor_runner.download_remote_archive = original_download
 
     assert any(url.endswith("/trajectories") for url in requests)
+
+
+def check_remote_service_error_skips_archive_download() -> None:
+    original_request = harbor_runner.remote_json_request
+    original_poll = harbor_runner.poll_remote_status
+    requests: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-service-error-test-") as raw:
+        root = Path(raw)
+        task_root = root / "task"
+        task_root.mkdir()
+        (task_root / "task.toml").write_text("", encoding="utf-8")
+        (task_root / "instruction.md").write_text("task\n", encoding="utf-8")
+        for directory in ("solution", "tests", "environment"):
+            (task_root / directory).mkdir()
+        jobs_dir = root / "harbor-jobs"
+        trajectories_dir = root / "trajectories"
+        run_id = "hr_123456789012"
+
+        def fake_remote_json_request(
+            method: str,
+            url: str,
+            token: str,
+            **kwargs: object,
+        ) -> tuple[int, dict[str, object], dict[str, str]]:
+            requests.append(url)
+            if method == "POST" and url.endswith("/runs"):
+                return 201, {"run_id": run_id, "state": "UPLOADING"}, {}
+            if method == "POST" and url.endswith(":start"):
+                return 200, {"state": "QUEUED"}, {}
+            if method == "GET" and url.endswith("/results"):
+                return 200, {
+                    "oracle": {"verdict": "PASS", "reward": 1},
+                    "summary": {
+                        "agent_trials_expected": 27,
+                        "agent_trials_finished": 0,
+                        "exception_count": 0,
+                    },
+                    "trials": [],
+                }, {}
+            raise AssertionError(f"unexpected remote request: {method} {url}")
+
+        def fake_poll_remote_status(*args: object, **kwargs: object) -> dict[str, object]:
+            return {
+                "state": "ERROR",
+                "terminal_reason": "EXECUTION_ERROR",
+                "error": {
+                    "type": "TypeError",
+                    "message": "Body is unusable: Body has already been read",
+                },
+            }
+
+        args = SimpleNamespace(
+            env="modal",
+            archive_only=False,
+            oracle_sort=False,
+            dry_run=False,
+            env_file=[],
+            agent_env=[],
+            verifier_env=[],
+            environment_kwarg=[],
+            agent_kwarg=[],
+            artifact=[],
+            modal_secret=[],
+            workbench_token="test-token",
+            remote_poll_min=0.25,
+            remote_poll_max=1.0,
+            remote_progress_interval_sec=30.0,
+            service_url="https://example.test/v1",
+            run=[],
+            n_concurrent=None,
+            default_concurrency=3,
+            repeats=1,
+            jobs_dir=jobs_dir,
+            run_id="remote-service-error",
+            resume=False,
+            archive_completed=True,
+            cancel_on_interrupt=True,
+            pass_threshold=1.0,
+            completed_trajectories_dir=trajectories_dir,
+        )
+
+        harbor_runner.remote_json_request = fake_remote_json_request  # type: ignore[assignment]
+        harbor_runner.poll_remote_status = fake_poll_remote_status  # type: ignore[assignment]
+        try:
+            assert harbor_runner.run_remote(task_root, args) == 5
+        finally:
+            harbor_runner.remote_json_request = original_request
+            harbor_runner.poll_remote_status = original_poll
+
+        evidence = trajectories_dir / run_id
+        assert (evidence / "remote-status.json").is_file()
+        assert (evidence / "remote-results.json").is_file()
+        assert not any(url.endswith("/trajectories") for url in requests)
 
 
 def check_sigterm_enters_cleanup_path() -> None:
@@ -735,6 +934,52 @@ def check_remote_progress_reporting() -> None:
     assert "totals: 2/9 trials finished, 1 pass, 1 fail, 0 exception" in rendered
 
 
+def check_remote_upload_progress() -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    original_urlopen = harbor_runner.urllib.request.urlopen
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(request: object, timeout: float) -> Response:
+        assert timeout == 120.0
+        seen["content_length"] = request.get_header("Content-length")
+        body = request.data
+        chunks: list[bytes] = []
+        while True:
+            chunk = body.read(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        seen["body"] = b"".join(chunks)
+        return Response()
+
+    archive = b"bundle-data" * 5000
+    output = io.StringIO()
+    harbor_runner.urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+    try:
+        with contextlib.redirect_stdout(output):
+            harbor_runner.remote_upload("https://storage.example/upload", archive, {})
+    finally:
+        harbor_runner.urllib.request.urlopen = original_urlopen
+
+    assert seen["content_length"] == str(len(archive))
+    assert seen["body"] == archive
+    rendered = output.getvalue()
+    if harbor_runner.RICH_AVAILABLE:
+        assert "Uploading task bundle" in rendered
+        assert "100%" in rendered
+    else:
+        assert "remote upload: uploading" in rendered
+        assert "100.0%" in rendered
+
+
 if __name__ == "__main__":
     check_run_identity()
     check_names_are_valid_and_unique()
@@ -745,9 +990,12 @@ if __name__ == "__main__":
     check_remote_archive_promotion_uses_direct_layout()
     check_remote_partial_archive_matches_local_layout()
     check_remote_oracle_exception_evidence_is_preserved()
+    check_remote_error_without_agent_trials_keeps_compact_evidence()
     check_remote_archive_extracts_evidence_without_task_files()
+    check_remote_archive_refuses_non_trajectory_manifest()
     check_remote_archive_flag_matches_local_behavior()
     check_remote_oracle_exception_downloads_archive()
+    check_remote_service_error_skips_archive_download()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()
     check_network_split_snapshots()
@@ -757,4 +1005,5 @@ if __name__ == "__main__":
     check_remote_bundle_wiring()
     check_remote_policy_wiring()
     check_remote_progress_reporting()
+    check_remote_upload_progress()
     print("Harbor runner isolation checks passed")

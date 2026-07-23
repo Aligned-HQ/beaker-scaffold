@@ -126,6 +126,12 @@ check_required_command git "Source control" "Install Git; agent CLIs and task ha
 check_required_command make "Project shortcuts" "Install make or run the documented commands directly."
 check_required_command rg "Repository search" "Install ripgrep; the skills and reviews use rg."
 
+if rich_version="$(python3 -c 'from importlib.metadata import version; print(version("rich"))' 2>/dev/null)"; then
+    pass_check "Rich terminal UI: Python package rich ${rich_version}"
+else
+    fail_check "Rich terminal UI: Python package rich is missing." "Install the pinned host dependency with: python3 -m pip install -r ${REPO_ROOT}/requirements.txt"
+fi
+
 workbench_env_file="${REPO_ROOT}/.env"
 workbench_token_state="missing"
 if [[ -f "$workbench_env_file" ]]; then
