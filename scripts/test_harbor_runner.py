@@ -953,8 +953,8 @@ def check_remote_progress_reporting() -> None:
     assert rendered.count("remote state: AGENTS_RUNNING") == 1
     assert "server updated: 2026-07-22T12:34:56.000Z" in rendered
     assert "Claude Code: RUNNING 2/9 pass=1 fail=1" in rendered
-    assert "Codex: QUEUED 0/9 pass=0 fail=0" in rendered
-    assert "Gemini: QUEUED 0/9 pass=0 fail=0" in rendered
+    assert "Codex: RUNNING 0/9 pass=0 fail=0" in rendered
+    assert "Gemini: RUNNING 0/9 pass=0 fail=0" in rendered
     if harbor_runner.RICH_AVAILABLE:
         table_output = io.StringIO()
         console = harbor_runner.Console(file=table_output, force_terminal=False)
@@ -999,7 +999,7 @@ def check_remote_upload_progress() -> None:
     seen: dict[str, object] = {}
 
     def fake_urlopen(request: object, timeout: float) -> Response:
-        assert timeout == 120.0
+        assert timeout == harbor_runner.REMOTE_TRANSFER_TIMEOUT_SECONDS
         seen["content_length"] = request.get_header("Content-length")
         body = request.data
         chunks: list[bytes] = []
