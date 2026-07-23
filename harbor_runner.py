@@ -122,6 +122,7 @@ REMOTE_ACTIVE_STATES = {
 }
 REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
 REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
+REMOTE_EXECUTION_POLICY_ID = "scientific-offline-v1"
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
 LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
@@ -675,6 +676,16 @@ def remote_agent_payload(args: argparse.Namespace) -> list[dict[str, object]]:
     if total_trials > 30:
         raise RemoteInputError("remote mode exceeds the server's 30-trial configuration limit")
     return agents
+
+
+def remote_execution_payload(args: argparse.Namespace, agents: list[dict[str, object]]) -> dict[str, object]:
+    """Build the server-selected execution contract for one uploaded task."""
+    return {
+        "attempts": args.repeats,
+        "oracle_pass_threshold": args.pass_threshold,
+        "execution_policy_id": REMOTE_EXECUTION_POLICY_ID,
+        "agents": agents,
+    }
 
 
 def remote_state_path(jobs_dir: Path, run_id: str) -> Path:
@@ -1424,7 +1435,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             payload = {
                 "client_request_id": client_request_id,
                 "task": {"name": task_root.name, "format": "tar.gz", "sha256": bundle_sha256, "size_bytes": bundle_size},
-                "execution": {"attempts": args.repeats, "oracle_pass_threshold": args.pass_threshold, "agents": agents},
+                "execution": remote_execution_payload(args, agents),
             }
             save_remote_state(request_path, {
                 **state,

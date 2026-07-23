@@ -443,7 +443,9 @@ does not use local `--modal-secret`, `--env-file`, `--agent-env`, verifier or
 environment kwargs, agent kwargs, or artifact overrides; the service owns the
 Modal/provider secret configuration and execution policy. The service accepts
 the approved Claude, Codex, and Gemini configurations and enforces its trial
-limit.
+limit. The client sends the server-approved `scientific-offline-v1` policy;
+Workbench keeps `[environment].allow_internet = false` for the Oracle and
+creates an agent-phase copy with `allow_internet = true` from the same upload.
 
 Create the local environment file before invoking the default remote mode. The
 runner loads `.env` automatically:

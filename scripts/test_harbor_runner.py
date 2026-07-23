@@ -523,6 +523,13 @@ def check_remote_policy_wiring() -> None:
     payload = harbor_runner.remote_agent_payload(args)
     assert all(item["concurrency"] == 5 for item in payload)
     assert sum(item["concurrency"] for item in payload) * args.repeats == 30
+    execution = harbor_runner.remote_execution_payload(
+        SimpleNamespace(repeats=2, pass_threshold=1.0),
+        payload,
+    )
+    assert execution["execution_policy_id"] == "scientific-offline-v1"
+    assert "allow_internet" not in execution
+    assert execution["agents"] == payload
     args.repeats = 3
     try:
         harbor_runner.remote_agent_payload(args)

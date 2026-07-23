@@ -117,6 +117,12 @@ machine; task environments must still run without internet access.
    across users. Remote mode does not accept local secret/env overrides because
    Workbench owns the Modal and provider credential configuration.
 
+   Remote mode uploads one task bundle and selects the server-approved
+   `scientific-offline-v1` execution policy. Workbench keeps the submitted
+   `[environment].allow_internet = false` value for the Oracle, then creates an
+   agent-phase snapshot with `allow_internet = true`; no second task upload is
+   needed and the source `task.toml` is not changed.
+
    Local runs show an Oracle spinner in a terminal and print an ordered agent
    progress scoreboard every 30 seconds by default. On a successful,
    exception-free run, the archive contains `trajectories/oracle/`,
