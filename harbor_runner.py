@@ -77,6 +77,7 @@ from uuid import uuid4
 
 try:
     from rich.console import Console
+    from rich.live import Live
     from rich.panel import Panel
     from rich.progress import (
         BarColumn,
@@ -92,6 +93,7 @@ try:
     from rich.text import Text
 except ImportError:  # pragma: no cover - exercised only on minimal host installs
     Console = None  # type: ignore[assignment,misc]
+    Live = None  # type: ignore[assignment,misc]
     Panel = None  # type: ignore[assignment]
     Progress = None  # type: ignore[assignment,misc]
     BarColumn = DownloadColumn = SpinnerColumn = TaskProgressColumn = None  # type: ignore[assignment]
@@ -881,6 +883,12 @@ REMOTE_STATE_MESSAGES = {
     "EXPIRED": "the worker lease expired; cleanup was attempted",
     "ERROR": "the service recorded an execution error",
 }
+REMOTE_PROGRESS_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+REMOTE_AGENT_DISPLAY_NAMES = {
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "gemini-cli": "Gemini",
+}
 
 
 def format_elapsed(seconds: float) -> str:
@@ -958,6 +966,119 @@ def remote_progress_signature(
     return tuple(signature_parts)
 
 
+def remote_progress_table(
+    status: dict[str, object],
+    *,
+    elapsed_sec: float = 0.0,
+    agent_order: tuple[str, ...] | None = None,
+    spinner_index: int = 0,
+) -> object:
+    """Build the single live remote progress table shown on a terminal."""
+    state = str(status.get("state") or "UNKNOWN")
+    message = REMOTE_STATE_MESSAGES.get(state, "waiting for the service to report progress")
+    frame = REMOTE_PROGRESS_SPINNER_FRAMES[spinner_index % len(REMOTE_PROGRESS_SPINNER_FRAMES)]
+    table = Table(
+        title=f"{frame} {state} · elapsed {format_elapsed(elapsed_sec)} · {message}",
+        expand=True,
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Run", style="bold")
+    table.add_column("PASS", justify="right", style="green")
+    table.add_column("FAIL", justify="right", style="red")
+    table.add_column("STATUS")
+
+    oracle = status.get("oracle") if isinstance(status.get("oracle"), dict) else {}
+    oracle_state = str(oracle.get("state") or "INCOMPLETE")
+    oracle_pass = "1" if oracle_state == "PASS" else "—"
+    oracle_fail = "1" if oracle_state == "FAIL" else "—"
+    oracle_status = oracle_state
+    if oracle.get("reward") is not None:
+        oracle_status += f" · reward={oracle.get('reward')}"
+    oracle_exception = oracle.get("exception")
+    if isinstance(oracle_exception, dict) and oracle_exception.get("type"):
+        oracle_status += f" · {oracle_exception.get('type')}"
+    table.add_row("Oracle", oracle_pass, oracle_fail, oracle_status)
+
+    raw_agents = status.get("agents") if isinstance(status.get("agents"), list) else []
+    agents_by_id = {
+        str(agent.get("id")): agent
+        for agent in raw_agents
+        if isinstance(agent, dict) and agent.get("id") is not None
+    }
+    ordered_ids = list(agent_order or ())
+    ordered_ids.extend(agent_id for agent_id in agents_by_id if agent_id not in ordered_ids)
+    for agent_id in ordered_ids:
+        agent = agents_by_id.get(agent_id)
+        if agent is None:
+            table.add_row(agent_id, "—", "—", "NOT REPORTED")
+            continue
+        finished = remote_count(agent.get("finished_trials"))
+        expected = remote_count(agent.get("expected_trials"))
+        passed = remote_count(agent.get("pass_count"))
+        failed = remote_count(agent.get("fail_count"))
+        exceptions = remote_count(agent.get("exception_count"))
+        agent_name = str(agent.get("agent") or agent_id)
+        display_name = REMOTE_AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
+        agent_status = f"{agent.get('state', 'UNKNOWN')} · {finished}/{expected}"
+        if exceptions:
+            agent_status += f" · {exceptions} exception"
+        table.add_row(display_name, str(passed), str(failed), agent_status)
+
+    caption_parts: list[str] = []
+    if status.get("updated_at"):
+        caption_parts.append(f"server updated: {status['updated_at']}")
+    if status.get("terminal_reason"):
+        caption_parts.append(f"terminal reason: {status['terminal_reason']}")
+    error = status.get("error")
+    if isinstance(error, dict) and (error.get("type") or error.get("message")):
+        caption_parts.append(str(error.get("message") or error.get("type")))
+    if caption_parts:
+        table.caption = " · ".join(caption_parts)
+    return table
+
+
+def remote_progress_plain_lines(
+    status: dict[str, object],
+    *,
+    elapsed_sec: float = 0.0,
+    agent_order: tuple[str, ...] | None = None,
+) -> tuple[str, list[str]]:
+    """Build a compact non-TTY fallback without repeated heartbeat details."""
+    state = status.get("state")
+    message = REMOTE_STATE_MESSAGES.get(str(state), "waiting for the service to report progress")
+    heading = f"remote state: {state} | {message} | elapsed {format_elapsed(elapsed_sec)}"
+    lines: list[str] = []
+    oracle = status.get("oracle") if isinstance(status.get("oracle"), dict) else {}
+    oracle_state = str(oracle.get("state") or "INCOMPLETE")
+    oracle_status = oracle_state
+    if oracle.get("reward") is not None:
+        oracle_status += f" reward={oracle.get('reward')}"
+    if status.get("updated_at"):
+        lines.append(f"  server updated: {status['updated_at']}")
+    lines.append(f"  Oracle: {oracle_status}")
+    agents = status.get("agents") if isinstance(status.get("agents"), list) else []
+    agents_by_id = {
+        str(agent.get("id")): agent
+        for agent in agents
+        if isinstance(agent, dict) and agent.get("id") is not None
+    }
+    ordered_ids = list(agent_order or ())
+    ordered_ids.extend(agent_id for agent_id in agents_by_id if agent_id not in ordered_ids)
+    for agent_id in ordered_ids:
+        agent = agents_by_id.get(agent_id)
+        if agent is None:
+            lines.append(f"  {agent_id}: NOT REPORTED")
+            continue
+        lines.append(
+            f"  {REMOTE_AGENT_DISPLAY_NAMES.get(str(agent.get('agent') or agent_id), str(agent.get('agent') or agent_id))}: "
+            f"{agent.get('state', 'UNKNOWN')} "
+            f"{remote_count(agent.get('finished_trials'))}/{remote_count(agent.get('expected_trials'))} "
+            f"pass={remote_count(agent.get('pass_count'))} fail={remote_count(agent.get('fail_count'))}",
+        )
+    return heading, lines
+
+
 def print_remote_progress(
     status: dict[str, object],
     previous: tuple[object, ...] | None,
@@ -965,98 +1086,46 @@ def print_remote_progress(
     elapsed_sec: float = 0.0,
     force: bool = False,
     agent_order: tuple[str, ...] | None = None,
+    live: object | None = None,
+    spinner_index: int = 0,
 ) -> tuple[object, ...]:
     state = status.get("state")
     signature = remote_progress_signature(status, agent_order=agent_order)
     changed = signature != previous
-    if changed or force:
-        label = "remote state" if changed else "remote heartbeat"
-        message = REMOTE_STATE_MESSAGES.get(str(state), "waiting for the service to report progress")
-        heading = f"{label}: {state} | {message} | elapsed {format_elapsed(elapsed_sec)}"
-        detail_lines: list[str] = []
-        updated_at = status.get("updated_at")
-        if updated_at:
-            detail_lines.append(f"  server updated: {updated_at}")
-
-        oracle = status.get("oracle") if isinstance(status.get("oracle"), dict) else {}
-        oracle_state = oracle.get("state", "INCOMPLETE")
-        oracle_reward = oracle.get("reward")
-        oracle_text = f"oracle: {oracle_state}"
-        if oracle_reward is not None:
-            oracle_text += f" reward={oracle_reward}"
-        oracle_job_id = oracle.get("job_id")
-        if oracle_job_id:
-            oracle_text += f" job={oracle_job_id}"
-        oracle_exception = oracle.get("exception")
-        if isinstance(oracle_exception, dict) and oracle_exception.get("type"):
-            oracle_text += f" exception={oracle_exception.get('type')}"
-        detail_lines.append(f"  {oracle_text}")
-
-        agents = status.get("agents") if isinstance(status.get("agents"), list) else []
-        total_expected = 0
-        total_finished = 0
-        total_passed = 0
-        total_failed = 0
-        total_exceptions = 0
-        for agent in ordered_remote_agents(agents, agent_order):
-            if not isinstance(agent, dict):
-                continue
-            expected = remote_count(agent.get("expected_trials"))
-            finished = remote_count(agent.get("finished_trials"))
-            passed = remote_count(agent.get("pass_count"))
-            failed = remote_count(agent.get("fail_count"))
-            exceptions = remote_count(agent.get("exception_count"))
-            total_expected += expected
-            total_finished += finished
-            total_passed += passed
-            total_failed += failed
-            total_exceptions += exceptions
-            job_id = agent.get("job_id")
-            job_suffix = f" job={job_id}" if job_id else ""
-            agent_meta = ""
-            if agent.get("agent") or agent.get("model"):
-                agent_meta = f" [{agent.get('agent', '?')} / {agent.get('model', '?')}]"
-            detail_lines.append(
-                f"  agent {agent.get('id', 'unknown')}{agent_meta}: "
-                f"{agent.get('state', 'UNKNOWN')} "
-                f"{finished}/{expected} trials, {passed} pass, {failed} fail, "
-                f"{exceptions} exception{job_suffix}",
-            )
-        if agents:
-            detail_lines.append(
-                f"  totals: {total_finished}/{total_expected} trials finished, "
-                f"{total_passed} pass, {total_failed} fail, {total_exceptions} exception",
-            )
-
-        terminal_reason = status.get("terminal_reason")
-        if terminal_reason:
-            detail_lines.append(f"  terminal reason: {terminal_reason}")
-        error = status.get("error")
-        if isinstance(error, dict) and (error.get("type") or error.get("message")):
-            detail = error.get("message") or error.get("type")
-            detail_lines.append(f"  service error: {detail}")
-        validation_errors = status.get("validation_errors")
-        if isinstance(validation_errors, list) and validation_errors:
-            detail_lines.append("  validation errors:")
-            for validation_error in validation_errors:
-                detail_lines.append(f"    - {validation_error}")
-
+    if live is not None:
+        live.update(
+            remote_progress_table(
+                status,
+                elapsed_sec=elapsed_sec,
+                agent_order=agent_order,
+                spinner_index=spinner_index,
+            ),
+            refresh=True,
+        )
+    elif changed:
+        heading, lines = remote_progress_plain_lines(
+            status,
+            elapsed_sec=elapsed_sec,
+            agent_order=agent_order,
+        )
         console = runner_console()
-        if console is not None:
-            details = Table.grid(padding=(0, 1))
-            details.add_column()
-            for detail_line in detail_lines:
-                details.add_row(_rich_text(detail_line))
-            console.print(_rich_text(heading))
-            console.print(Panel(details, title="Remote progress", border_style="cyan"))
+        if console is not None and getattr(console, "is_terminal", False):
+            console.print(
+                remote_progress_table(
+                    status,
+                    elapsed_sec=elapsed_sec,
+                    agent_order=agent_order,
+                    spinner_index=spinner_index,
+                )
+            )
         else:
             print(heading, flush=True)
-            for detail_line in detail_lines:
-                print(detail_line, flush=True)
+            for line in lines:
+                print(line, flush=True)
     return signature
 
 
-def poll_remote_status(
+def _poll_remote_status_loop(
     base: str,
     run_id: str,
     token: str,
@@ -1067,6 +1136,7 @@ def poll_remote_status(
     agent_order: tuple[str, ...] | None,
     state_path: Path,
     state: dict[str, object],
+    live: object | None,
 ) -> dict[str, object]:
     etag: str | None = None
     previous_signature: tuple[object, ...] | None = None
@@ -1074,6 +1144,7 @@ def poll_remote_status(
     started = time.monotonic()
     last_announcement = 0.0
     last_status: dict[str, object] | None = None
+    spinner_index = 0
     while True:
         headers = {"If-None-Match": etag} if etag else {}
         try:
@@ -1101,7 +1172,10 @@ def poll_remote_status(
                     elapsed_sec=now - started,
                     force=True,
                     agent_order=agent_order,
+                    live=live,
+                    spinner_index=spinner_index,
                 )
+                spinner_index += 1
                 last_announcement = now
             time.sleep(remote_retry_after(response_headers, delay))
             delay = min(maximum_delay, max(minimum_delay, delay * 2))
@@ -1121,7 +1195,10 @@ def poll_remote_status(
             elapsed_sec=now - started,
             force=should_announce,
             agent_order=agent_order,
+            live=live,
+            spinner_index=spinner_index,
         )
+        spinner_index += 1
         if should_announce:
             last_announcement = now
         state.update({"run_id": run_id, "last_status": status.get("state"), "last_status_response": status})
@@ -1131,6 +1208,49 @@ def poll_remote_status(
         wait = remote_retry_after(response_headers, delay)
         time.sleep(wait)
         delay = min(maximum_delay, max(minimum_delay, delay * 2))
+
+
+def poll_remote_status(
+    base: str,
+    run_id: str,
+    token: str,
+    *,
+    minimum_delay: float,
+    maximum_delay: float,
+    progress_interval: float,
+    agent_order: tuple[str, ...] | None,
+    state_path: Path,
+    state: dict[str, object],
+) -> dict[str, object]:
+    """Poll remote status with one in-place live table on interactive terminals."""
+    console = runner_console()
+    if Live is not None and console is not None and getattr(console, "is_terminal", False):
+        live = Live(console=console, refresh_per_second=4, transient=False)
+        with live:
+            return _poll_remote_status_loop(
+                base,
+                run_id,
+                token,
+                minimum_delay=minimum_delay,
+                maximum_delay=maximum_delay,
+                progress_interval=progress_interval,
+                agent_order=agent_order,
+                state_path=state_path,
+                state=state,
+                live=live,
+            )
+    return _poll_remote_status_loop(
+        base,
+        run_id,
+        token,
+        minimum_delay=minimum_delay,
+        maximum_delay=maximum_delay,
+        progress_interval=progress_interval,
+        agent_order=agent_order,
+        state_path=state_path,
+        state=state,
+        live=None,
+    )
 
 
 REMOTE_EVIDENCE_FILE_NAMES = {
@@ -4563,8 +4683,8 @@ def main(argv: list[str]) -> int:
         type=float,
         default=REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS,
         help=(
-            "Print a remote heartbeat at least this often while the service "
-            "has not changed state (default: 30)."
+            "Refresh the live remote progress table at least this often while "
+            "the service has not changed state (default: 30)."
         ),
     )
     parser.add_argument(
