@@ -258,6 +258,7 @@ def check_remote_archive_promotion_uses_direct_layout() -> None:
         (source / "oracle" / "trial-0").mkdir(parents=True)
         (source / "claude-code" / "trial-0").mkdir(parents=True)
         (source / "summary.md").write_text("# remote summary\n", encoding="utf-8")
+        (destination / ".hr_remote-run.sha256").write_text("sha256:test\n", encoding="utf-8")
         (destination / "stale-output").mkdir(parents=True)
         (destination / "stale-output" / "old.txt").write_text("old", encoding="utf-8")
 
@@ -267,8 +268,111 @@ def check_remote_archive_promotion_uses_direct_layout() -> None:
         assert (destination / "summary.md").is_file()
         assert (destination / "oracle" / "trial-0").is_dir()
         assert (destination / "claude-code" / "trial-0").is_dir()
-        assert not (destination / "stale-output").exists()
         assert not archive.exists()
+        assert not (destination / ".hr_remote-run.sha256").exists()
+        assert not (destination / "stale-output").exists()
+
+
+def check_remote_partial_archive_matches_local_layout() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-partial-archive-test-") as raw:
+        root = Path(raw)
+        destination = root / "trajectories"
+        archive = destination / "hr_remote-run"
+        source = archive / "example-task" / "trajectories"
+        (source / "oracle" / "trial-0").mkdir(parents=True)
+        (source / "codex" / "trial-0").mkdir(parents=True)
+        (source / "summary.md").write_text("# partial remote summary\n", encoding="utf-8")
+        (destination / ".hr_remote-run.sha256").write_text("sha256:test\n", encoding="utf-8")
+        (destination / "previous-success").mkdir(parents=True)
+
+        preserved = harbor_runner.preserve_remote_trajectory_archive(
+            archive,
+            destination,
+            "example-task",
+        )
+
+        assert preserved == archive.resolve()
+        assert (archive / "summary.md").is_file()
+        assert (archive / "example-task" / "trajectories" / "oracle").is_dir()
+        assert (archive / "example-task" / "trajectories" / "codex").is_dir()
+        assert (destination / "previous-success").is_dir()
+        assert not (destination / ".hr_remote-run.sha256").exists()
+
+
+def check_remote_archive_flag_matches_local_behavior() -> None:
+    original_request = harbor_runner.remote_json_request
+    original_poll = harbor_runner.poll_remote_status
+    requests: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-no-archive-test-") as raw:
+        root = Path(raw)
+        task_root = root / "task"
+        task_root.mkdir()
+        (task_root / "task.toml").write_text("", encoding="utf-8")
+        (task_root / "instruction.md").write_text("task\n", encoding="utf-8")
+        for directory in ("solution", "tests", "environment"):
+            (task_root / directory).mkdir()
+        jobs_dir = root / "harbor-jobs"
+        trajectories_dir = root / "trajectories"
+
+        def fake_remote_json_request(
+            method: str,
+            url: str,
+            token: str,
+            **kwargs: object,
+        ) -> tuple[int, dict[str, object], dict[str, str]]:
+            requests.append(url)
+            if method == "POST" and url.endswith("/runs"):
+                return 201, {"run_id": "hr_123456789012", "state": "UPLOADING"}, {}
+            if method == "POST" and url.endswith(":start"):
+                return 200, {"state": "QUEUED"}, {}
+            if method == "GET" and url.endswith("/results"):
+                return 200, {"summary": {"exception_count": 0}}, {}
+            raise AssertionError(f"unexpected remote request: {method} {url}")
+
+        def fake_poll_remote_status(*args: object, **kwargs: object) -> dict[str, object]:
+            return {"state": "COMPLETE", "terminal_reason": None}
+
+        args = SimpleNamespace(
+            env="modal",
+            archive_only=False,
+            oracle_sort=False,
+            dry_run=False,
+            env_file=[],
+            agent_env=[],
+            verifier_env=[],
+            environment_kwarg=[],
+            agent_kwarg=[],
+            artifact=[],
+            modal_secret=[],
+            workbench_token="test-token",
+            remote_poll_min=0.25,
+            remote_poll_max=1.0,
+            remote_progress_interval_sec=30.0,
+            service_url="https://example.test/v1",
+            run=[],
+            n_concurrent=None,
+            default_concurrency=3,
+            repeats=1,
+            jobs_dir=jobs_dir,
+            run_id="remote-no-archive",
+            resume=False,
+            archive_completed=False,
+            cancel_on_interrupt=True,
+            pass_threshold=1.0,
+            completed_trajectories_dir=trajectories_dir,
+        )
+
+        harbor_runner.remote_json_request = fake_remote_json_request  # type: ignore[assignment]
+        harbor_runner.poll_remote_status = fake_poll_remote_status  # type: ignore[assignment]
+        try:
+            assert harbor_runner.run_remote(task_root, args) == 0
+        finally:
+            harbor_runner.remote_json_request = original_request
+            harbor_runner.poll_remote_status = original_poll
+
+    assert not any(url.endswith("/trajectories") for url in requests)
+    assert not trajectories_dir.exists()
 
 
 def check_sigterm_enters_cleanup_path() -> None:
@@ -381,7 +485,7 @@ def check_remote_defaults_load_dotenv() -> None:
         harbor_runner.run_remote = fake_run_remote  # type: ignore[assignment]
         os.chdir(root)
         try:
-            assert harbor_runner.main(["task", "--remote"]) == 0
+            assert harbor_runner.main(["task"]) == 0
         finally:
             os.chdir(original_cwd)
             harbor_runner.run_remote = original_run_remote
@@ -396,6 +500,7 @@ def check_remote_defaults_load_dotenv() -> None:
     assert seen["task"] == task_root.resolve()
     assert getattr(args, "service_url") == "https://example.test/v1"
     assert getattr(args, "workbench_token") == "dotenv-token"
+    assert getattr(args, "cancel_on_interrupt") is True
 
 
 def check_remote_bundle_wiring() -> None:
@@ -476,6 +581,8 @@ if __name__ == "__main__":
     check_snapshot_results_map_to_original_task()
     check_successful_archive_uses_agent_names_and_oracle()
     check_remote_archive_promotion_uses_direct_layout()
+    check_remote_partial_archive_matches_local_layout()
+    check_remote_archive_flag_matches_local_behavior()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()
     check_network_split_snapshots()

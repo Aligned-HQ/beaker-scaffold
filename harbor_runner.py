@@ -9,7 +9,8 @@ each model. Harbor -- not this script -- owns the attempt fan-out, so the run
 is resumable via `harbor jobs resume` and every attempt for an agent lives in a
 single job for easy pass@k aggregation.
 
-Modal is the default backend. Preflight requires explicit
+Workbench remote mode is the default execution path; use `--no-remote` for a
+local Modal run. Preflight requires explicit
 `FROM --platform=linux/amd64` declarations in task Dockerfiles and rejects
 prebuilt image manifests that are not a single Linux/amd64 image. The source
 task must declare `[environment].allow_internet = false`; normal runs create
@@ -18,13 +19,16 @@ an offline Oracle snapshot and a separate agent snapshot with
 
 Examples:
     # Build the task image and run the reference solution/verifier locally:
-    ./harbor_runner.py ./task --smoke-test
+    ./harbor_runner.py ./task --no-remote --smoke-test
 
-    # Run the Oracle, then all three default agents, 3 attempts each:
+    # Submit remotely (the default), then monitor the Oracle and agents:
     ./harbor_runner.py ./task
 
-    # Preview the harbor commands without running them:
-    ./harbor_runner.py ./task --dry-run
+    # Run locally on Modal:
+    ./harbor_runner.py ./task --no-remote
+
+    # Preview the local Harbor commands without running them:
+    ./harbor_runner.py ./task --no-remote --dry-run
 
     # Resume an interrupted run (reuse the printed --run-id):
     ./harbor_runner.py ./task --run-id 20260528-101500-a1b2c3d4e5 --resume
@@ -1225,6 +1229,80 @@ def promote_remote_trajectory_archive(
     return trajectories_dir
 
 
+def preserve_remote_trajectory_archive(
+    archive_destination: Path,
+    trajectories_dir: Path,
+    task_name: str,
+) -> Path:
+    """Keep a remote partial run in the same run-scoped shape as local output."""
+    archive_destination = archive_destination.resolve()
+    trajectories_dir = trajectories_dir.expanduser().resolve()
+    if not archive_destination.is_dir():
+        raise RemoteClientError(
+            0,
+            "archive_layout",
+            "The downloaded trajectory archive is missing its extracted directory.",
+        )
+
+    direct_source = archive_destination / "trajectories"
+    if direct_source.is_dir():
+        task_archive_dir = archive_destination / task_name
+        if task_archive_dir.exists():
+            raise RemoteClientError(
+                0,
+                "archive_layout",
+                "The downloaded trajectory archive has conflicting task layouts.",
+            )
+        task_archive_dir.mkdir(parents=True)
+        shutil.move(str(direct_source), str(task_archive_dir / "trajectories"))
+
+    nested_sources = sorted(
+        child / "trajectories"
+        for child in archive_destination.iterdir()
+        if child.is_dir() and (child / "trajectories").is_dir()
+    )
+    if len(nested_sources) != 1:
+        raise RemoteClientError(
+            0,
+            "archive_layout",
+            "The downloaded trajectory archive does not contain one task trajectories directory.",
+        )
+
+    summary_source = next(
+        (
+            candidate
+            for candidate in (
+                nested_sources[0] / "summary.md",
+                archive_destination / "summary.md",
+                nested_sources[0] / "summary.json",
+                archive_destination / "summary.json",
+            )
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if summary_source is not None:
+        summary_destination = archive_destination / (
+            "summary.md" if summary_source.suffix == ".md" else "summary.json"
+        )
+        if not summary_destination.is_file():
+            shutil.copy2(summary_source, summary_destination)
+
+    cleanup_remote_archive_download(trajectories_dir, archive_destination.name)
+    print(
+        f"trajectory archive: preserved partial run -> {archive_destination}",
+        flush=True,
+    )
+    return archive_destination
+
+
+def cleanup_remote_archive_download(base_dir: Path, run_id: str) -> None:
+    """Remove the checksum sidecar left by a verified remote download."""
+    marker = base_dir.expanduser().resolve() / f".{run_id}.sha256"
+    if marker.is_file() or marker.is_symlink():
+        marker.unlink()
+
+
 def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> int:
     state = status.get("state")
     if state == "ORACLE_FAILED":
@@ -1472,9 +1550,15 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
 
         assert isinstance(run_id, str)
         service_run_path = service_run_path or remote_state_path(jobs_dir, run_id)
+        cancel_on_interrupt = bool(getattr(args, "cancel_on_interrupt", True))
+        interrupt_behavior = (
+            "Ctrl-C requests server cancellation"
+            if cancel_on_interrupt
+            else "Ctrl-C leaves the server run running"
+        )
         print(
             f"remote monitor: polling {run_id}; progress messages every "
-            f"{args.remote_progress_interval_sec:g}s (Ctrl-C leaves the server run running by default)",
+            f"{args.remote_progress_interval_sec:g}s ({interrupt_behavior})",
             flush=True,
         )
         status = poll_remote_status(
@@ -1498,54 +1582,78 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/results"), token
         )
         print_remote_results(results, agent_order=agent_order)
-        manifest: dict[str, object] | None = None
-        print("remote archive: waiting for the trajectory manifest", flush=True)
-        for attempt in range(20):
-            try:
-                _, manifest_value, _ = remote_json_request(
-                    "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/trajectories"), token
-                )
-                manifest = manifest_value
-                break
-            except RemoteClientError as error:
-                if error.status != 409:
-                    raise
-                if attempt == 0 or (attempt + 1) % 5 == 0:
-                    print(
-                        f"remote archive: still finalizing; retrying manifest "
-                        f"({attempt + 1}/20)",
-                        flush=True,
-                    )
-                time.sleep(1.0)
-        if manifest is None:
-            raise RemoteClientError(409, "trajectory_not_ready", "The service did not publish a trajectory archive.")
-        print(
-            f"remote archive: manifest ready ({manifest.get('size_bytes', '?')} bytes, "
-            f"{manifest.get('entry_count', '?')} entries); downloading",
-            flush=True,
-        )
-        archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
         remote_exit = remote_exit_code(status, results)
-        if remote_exit == 0:
-            archive_destination = promote_remote_trajectory_archive(
-                archive_destination,
-                args.completed_trajectories_dir,
+        manifest: dict[str, object] | None = None
+        archive_destination: Path | None = None
+        should_archive = bool(args.archive_completed) and status.get("state") not in {
+            "ORACLE_FAILED",
+            "ORACLE_EXCEPTION",
+        }
+        if not args.archive_completed:
+            print("remote archive: skipped (--no-archive-completed)", flush=True)
+            cleanup_remote_archive_download(args.completed_trajectories_dir, run_id)
+        elif not should_archive:
+            print(
+                f"remote archive: skipped for terminal state {status.get('state')}",
+                flush=True,
             )
+        else:
+            print("remote archive: waiting for the trajectory manifest", flush=True)
+            for attempt in range(20):
+                try:
+                    _, manifest_value, _ = remote_json_request(
+                        "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/trajectories"), token
+                    )
+                    manifest = manifest_value
+                    break
+                except RemoteClientError as error:
+                    if error.status != 409:
+                        raise
+                    if attempt == 0 or (attempt + 1) % 5 == 0:
+                        print(
+                            f"remote archive: still finalizing; retrying manifest "
+                            f"({attempt + 1}/20)",
+                            flush=True,
+                        )
+                    time.sleep(1.0)
+            if manifest is None:
+                raise RemoteClientError(409, "trajectory_not_ready", "The service did not publish a trajectory archive.")
+            print(
+                f"remote archive: manifest ready ({manifest.get('size_bytes', '?')} bytes, "
+                f"{manifest.get('entry_count', '?')} entries); downloading",
+                flush=True,
+            )
+            archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
+            if remote_exit == 0:
+                archive_destination = promote_remote_trajectory_archive(
+                    archive_destination,
+                    args.completed_trajectories_dir,
+                )
+            else:
+                archive_destination = preserve_remote_trajectory_archive(
+                    archive_destination,
+                    args.completed_trajectories_dir,
+                    task_root.name,
+                )
         state.update({
             "run_id": run_id,
             "service_url": base,
             "terminal_state": status.get("state"),
-            "trajectory_sha256": manifest.get("sha256"),
-            "trajectory_directory": str(archive_destination),
-            "archive_downloaded": True,
+            "trajectory_sha256": manifest.get("sha256") if manifest else None,
+            "trajectory_directory": str(archive_destination) if archive_destination else None,
+            "archive_downloaded": archive_destination is not None,
         })
         save_remote_state(service_run_path, state)
         if request_path != service_run_path:
             save_remote_state(request_path, state)
-        print(f"remote complete: trajectory archive available at {archive_destination}", flush=True)
+        if archive_destination is not None:
+            print(f"remote complete: trajectory archive available at {archive_destination}", flush=True)
+        else:
+            print("remote complete: no local trajectory archive", flush=True)
         return remote_exit
     except KeyboardInterrupt:
-        if getattr(args, "cancel_on_interrupt", False) and isinstance(run_id, str) and base:
+        cancel_on_interrupt = bool(getattr(args, "cancel_on_interrupt", True))
+        if cancel_on_interrupt and isinstance(run_id, str) and base:
             try:
                 remote_json_request(
                     "POST",
@@ -1555,7 +1663,12 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 print("remote run cancellation requested", flush=True)
             except Exception:
                 print("remote run cancellation could not be confirmed", file=sys.stderr)
-        print("interrupt: remote run was not canceled" if not getattr(args, "cancel_on_interrupt", False) else "interrupt: remote run cancellation requested", file=sys.stderr)
+        print(
+            "interrupt: remote run was not canceled"
+            if not cancel_on_interrupt
+            else "interrupt: remote run cancellation requested",
+            file=sys.stderr,
+        )
         return 130
     except RemoteInputError as error:
         print(f"remote input error: {error}", file=sys.stderr)
@@ -3924,8 +4037,12 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--remote",
-        action="store_true",
-        help="Submit this one task to the Workbench Harbor service instead of running local Modal jobs.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Submit this task to Workbench (default); use --no-remote for local "
+            "Modal jobs."
+        ),
     )
     parser.add_argument(
         "--service-url",
@@ -3939,8 +4056,12 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--cancel-on-interrupt",
-        action="store_true",
-        help="Request remote cancellation on Ctrl-C; the default leaves the server run running.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Request remote cancellation on Ctrl-C (default); use "
+            "--no-cancel-on-interrupt to leave the server run running."
+        ),
     )
     parser.add_argument(
         "--remote-poll-min",
@@ -4211,8 +4332,8 @@ def main(argv: list[str]) -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "After a successful exception-free run, replace the direct trajectory "
-            "folders under --completed-trajectories-dir (default: enabled)."
+            "Archive trajectory output; successful runs replace the direct folders "
+            "and partial runs stay under a run ID (default: enabled)."
         ),
     )
     parser.add_argument(

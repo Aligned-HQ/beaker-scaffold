@@ -345,7 +345,7 @@ offline Linux/amd64 Docker container, and preserves verifier logs and copied
 outputs under `task/.runner-logs/`:
 
 ```bash
-./harbor_runner.py task --smoke-test
+./harbor_runner.py task --no-remote --smoke-test
 ```
 
 The smoke mode does not build or run the separate Harbor verifier image and does
@@ -359,7 +359,8 @@ for the separate verifier image.
 
 `harbor_runner.py` runs this repository's single `task/` directory through an
 Oracle gate and then the three configured agent jobs. It has two execution
-modes: local Modal mode (the default) and Workbench service mode (`--remote`).
+modes: local Modal mode (`--no-remote`) and Workbench service mode. Workbench
+remote mode is the default; use `--no-remote` for a local Modal run.
 Choose one mode before starting; the credentials and cleanup behavior differ.
 
 ### Local Modal run
@@ -370,9 +371,9 @@ run. Create the provider-key entries as named Modal Secrets using the approved
 Modal workflow. The secret names—not their values—are passed to Harbor:
 
 ```bash
-./harbor_runner.py task
+./harbor_runner.py task --no-remote
 # Pass the names of existing Modal Secrets; never put their values in this command.
-./harbor_runner.py task --modal-secret openai-api-key \
+./harbor_runner.py task --no-remote --modal-secret openai-api-key \
   --modal-secret anthropic-api-key --modal-secret google-api-key
 ```
 
@@ -394,9 +395,10 @@ For a normal local run, the runner:
 1. Validates the source task's Modal contract: the source must declare
    `[environment].allow_internet = false`, and the runtime and verifier
    Dockerfiles (or prebuilt image) must be Linux/amd64.
-2. Clears the contents of `harbor-jobs/` for a fresh run. Use `--resume` with
-   the printed run ID to preserve and resume an interrupted run; `--dry-run`
-   and `--archive-only` also preserve existing job output.
+2. Clears the contents of `harbor-jobs/` for a fresh run. Use
+   `--no-remote --resume` with the printed run ID to preserve and resume an
+   interrupted run; `--no-remote --dry-run` and `--no-remote --archive-only`
+   also preserve existing job output.
 3. Creates two immutable task snapshots under `harbor-jobs/`: an offline
    Oracle snapshot and a separate agent snapshot whose generated metadata has
    `allow_internet = true`. The source `task/` directory is not changed.
@@ -443,25 +445,27 @@ Modal/provider secret configuration and execution policy. The service accepts
 the approved Claude, Codex, and Gemini configurations and enforces its trial
 limit.
 
-Create the local environment file before invoking remote mode. The runner loads
-`.env` automatically:
+Create the local environment file before invoking the default remote mode. The
+runner loads `.env` automatically:
 
 ```bash
 cp .env.example .env
 # Edit .env and paste WORKBENCH_RUNNER_TOKEN from Workbench → Settings → Access token.
-./harbor_runner.py task --remote
+./harbor_runner.py task
 ```
 
 The client sends the token as a bearer credential to Workbench, uploads a
 bounded tar.gz task bundle, polls the run state, and prints Oracle/agent trial
 counts and 30-second heartbeats. It downloads and validates the trajectory
-archive when the service publishes it. Ctrl-C leaves a remote run running by
-default; add `--cancel-on-interrupt` to request cancellation. Use `--resume`
+archive when the service publishes it. Ctrl-C requests remote cancellation by
+default; use `--no-cancel-on-interrupt` to leave the server run running. Use `--resume`
 with the same run ID and local `harbor-jobs/` state to continue a remote
 submission or monitor it again. On a successful remote run, the client
 promotes the downloaded archive to the same direct `trajectories/` layout used
-by local runs. Do not put `.env`, API keys, credentials, host paths, or local
-run output in the submitted task bundle.
+by local runs. Partial remote runs remain under `trajectories/<run-id>/` without
+replacing a previous successful direct archive; `--no-archive-completed` skips
+the local trajectory download. Do not put `.env`, API keys, credentials, host
+paths, or local run output in the submitted task bundle.
 
 ## 9. Run the trajectory-review script
 

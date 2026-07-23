@@ -13,7 +13,7 @@ runner-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py
 
 run-smoke:
-	./harbor_runner.py task --smoke-test $(ARGS)
+	./harbor_runner.py task --no-remote --smoke-test $(ARGS)
 
 run-harbor:
 	./harbor_runner.py $(ARGS)

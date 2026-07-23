@@ -48,7 +48,7 @@ From the repository root:
 
 ```bash
 python3 scripts/validate_scaffold.py
-./harbor_runner.py task --smoke-test
+./harbor_runner.py task --no-remote --smoke-test
 ```
 
 To verify the vendored verifier dependencies without an index:
@@ -61,7 +61,7 @@ python3 .agents/skills/task-fixer/scripts/vendor_offline_dependencies.py \
 For a Harbor task, use the task directory rather than the project wrapper:
 
 ```bash
-./harbor_runner.py task --dry-run
+./harbor_runner.py task --no-remote --dry-run
 ```
 
 After a successful multi-agent run, the vendored runner writes its Oracle,

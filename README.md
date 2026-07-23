@@ -66,18 +66,21 @@ machine; task environments must still run without internet access.
 7. Run the local Docker smoke test:
 
    ```bash
-   ./harbor_runner.py task --smoke-test
+   ./harbor_runner.py task --no-remote --smoke-test
    ```
 
-8. Run the Harbor task runner. The default is a local Modal run; the alternate
-   `--remote` mode submits the single task to the Workbench Harbor service.
+8. Run the Harbor task runner. The default submits the single task to the
+   Workbench Harbor service; use `--no-remote` for a local Modal run.
    Do not put API keys in task files or commit an `.env` file.
 
    ```bash
-   # Local Modal run: Harbor and Modal must be installed/authenticated.
+   # Default: Workbench remote run; create .env first and add the runner token.
+   cp .env.example .env
    ./harbor_runner.py task
+   # Local Modal run: Harbor and Modal must be installed/authenticated.
+   ./harbor_runner.py task --no-remote
    # Optional: pass names of existing Modal Secrets, never their values.
-   ./harbor_runner.py task --modal-secret openai-api-key \
+   ./harbor_runner.py task --no-remote --modal-secret openai-api-key \
      --modal-secret anthropic-api-key --modal-secret google-api-key
    ```
 
@@ -86,9 +89,10 @@ machine; task environments must still run without internet access.
    agent snapshots, runs one Oracle attempt first, and starts the three agent
    jobs only if the Oracle passes. The defaults are 3 attempts with concurrency
    3 per agent (9 trials per model, 27 total), with all three agent jobs started
-   concurrently. A fresh run clears `harbor-jobs/`; use `--resume` with the
-   printed run ID to preserve and resume it. `--archive-only` processes existing
-   local output without clearing it.
+   concurrently. A fresh run clears `harbor-jobs/`; use `--no-remote --resume`
+   with the printed run ID to preserve and resume it.
+   `--no-remote --archive-only` processes existing local output without clearing
+   it.
 
    Modal control-plane authentication comes from the local Modal CLI/SDK. The
    `--modal-secret` values are names of existing Modal Secrets containing the
@@ -99,9 +103,8 @@ machine; task environments must still run without internet access.
    smoke test and image checks; the Harbor task jobs themselves run on Modal,
    and this runner does not invoke local agent CLI processes.
 
-   To submit the task to the Workbench Harbor service instead, create a local
-   environment file before starting the remote runner. The runner loads `.env`
-   automatically:
+   The remote runner loads `.env` automatically. To invoke remote mode
+   explicitly, use `--remote`:
 
    ```bash
    cp .env.example .env
@@ -119,12 +122,13 @@ machine; task environments must still run without internet access.
    exception-free run, the archive contains `trajectories/oracle/`,
    `trajectories/claude-code/`, `trajectories/codex/`,
    `trajectories/gemini-cli/`, and `trajectories/summary.md`. Partial runs do
-   not replace a previous successful direct archive. Remote runs print
+   not replace a previous successful direct archive; remote partial archives are
+   retained under `trajectories/<run-id>/` in the same layout. Remote runs print
    Workbench state changes, Oracle and per-agent trial counts, heartbeats,
    result summaries, and trajectory-download progress. Use
    `--remote-progress-interval-sec SECONDS` to change the remote heartbeat
-   interval (30 seconds by default). Ctrl-C leaves a remote run running unless
-   `--cancel-on-interrupt` is supplied.
+   interval (30 seconds by default). Ctrl-C requests remote cancellation by
+   default; use `--no-cancel-on-interrupt` to leave the server run running.
 
 9. Review the completed trajectory:
 
