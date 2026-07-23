@@ -983,6 +983,43 @@ def poll_remote_status(
         delay = min(maximum_delay, max(minimum_delay, delay * 2))
 
 
+REMOTE_EVIDENCE_FILE_NAMES = {
+    "summary.md",
+    "summary.json",
+    "oracle-exception.json",
+    "oracle-exception.txt",
+    "exception.json",
+    "exception.txt",
+    "exception.log",
+}
+
+
+def remote_archive_member_is_evidence(normalized: str, run_id: str) -> bool:
+    """Keep trajectory and shallow run/Oracle evidence, not task source files."""
+    relative = posixpath.relpath(normalized, run_id)
+    if relative == ".":
+        return True
+    parts = relative.split("/")
+    if "trajectories" in parts:
+        return True
+    if len(parts) <= 2 and parts[-1].lower() in REMOTE_EVIDENCE_FILE_NAMES:
+        return True
+    return len(parts) <= 2 and "exception" in parts[-1].lower()
+
+
+def prune_remote_archive_to_evidence(destination: Path, run_id: str) -> None:
+    """Remove task source files from an already verified remote archive."""
+    if not destination.is_dir() or destination.is_symlink():
+        return
+    for path in sorted(destination.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        normalized = f"{run_id}/{path.relative_to(destination).as_posix()}"
+        if path.is_symlink() or path.is_file():
+            if not remote_archive_member_is_evidence(normalized, run_id):
+                path.unlink()
+        elif path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+
+
 def safe_remote_extract(archive_bytes: bytes, destination: Path, run_id: str) -> int:
     if not re.fullmatch(r"hr_[A-Za-z0-9_-]{12,100}", run_id):
         raise RemoteClientError(0, "unsafe_archive", "The trajectory archive run id is invalid.")
@@ -1028,9 +1065,17 @@ def safe_remote_extract(archive_bytes: bytes, destination: Path, run_id: str) ->
         stage = stage_parent / run_id
         stage.mkdir()
         try:
-            directories = sorted((member for member in members if member.isdir()), key=lambda item: item.name.count("/"))
-            regular_files = [member for member in members if member.isfile()]
-            symlinks = [member for member in members if member.issym()]
+            evidence_members = [
+                member
+                for member in members
+                if remote_archive_member_is_evidence(posixpath.normpath(member.name), run_id)
+            ]
+            directories = sorted(
+                (member for member in evidence_members if member.isdir()),
+                key=lambda item: item.name.count("/"),
+            )
+            regular_files = [member for member in evidence_members if member.isfile()]
+            symlinks = [member for member in evidence_members if member.issym()]
             for member in directories:
                 relative = posixpath.relpath(posixpath.normpath(member.name), run_id)
                 target = stage / Path(relative)
@@ -1098,6 +1143,7 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
     destination = base_dir.resolve() / run_id
     marker = base_dir.resolve() / f".{run_id}.sha256"
     if remote_local_archive_ready(base_dir.resolve(), run_id, sha256):
+        prune_remote_archive_to_evidence(destination, run_id)
         print(f"trajectory archive: already verified at {destination}", flush=True)
         return destination
     print(f"trajectory archive: downloading {size_bytes} bytes", flush=True)
@@ -1141,7 +1187,11 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
         raise RemoteClientError(0, "archive_manifest", "The trajectory archive entry count did not match its manifest.")
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{sha256}\n", encoding="utf-8")
-    print(f"trajectory archive: extracted {count} entries to {destination}", flush=True)
+    print(
+        f"trajectory archive: extracted trajectory/exception evidence "
+        f"({count} archive entries verified) to {destination}",
+        flush=True,
+    )
     return destination
 
 
@@ -1272,12 +1322,23 @@ def preserve_remote_trajectory_archive(
         for child in archive_destination.iterdir()
         if child.is_dir() and (child / "trajectories").is_dir()
     )
-    if len(nested_sources) != 1:
+    if len(nested_sources) > 1:
         raise RemoteClientError(
             0,
             "archive_layout",
             "The downloaded trajectory archive does not contain one task trajectories directory.",
         )
+
+    if not nested_sources:
+        # Oracle exceptions may publish only an exception payload or log. Keep
+        # that evidence under the run-scoped archive even without a normal
+        # trajectories/ directory.
+        cleanup_remote_archive_download(trajectories_dir, archive_destination.name)
+        print(
+            f"trajectory archive: preserved exception evidence -> {archive_destination}",
+            flush=True,
+        )
+        return archive_destination
 
     summary_source = next(
         (
@@ -1312,6 +1373,29 @@ def cleanup_remote_archive_download(base_dir: Path, run_id: str) -> None:
     marker = base_dir.expanduser().resolve() / f".{run_id}.sha256"
     if marker.is_file() or marker.is_symlink():
         marker.unlink()
+
+
+def write_remote_oracle_exception_evidence(
+    archive_destination: Path,
+    run_id: str,
+    status: dict[str, object],
+    results: dict[str, object],
+) -> None:
+    """Ensure an Oracle exception remains inspectable in the local archive."""
+    evidence_path = archive_destination / "oracle-exception.json"
+    if evidence_path.exists():
+        return
+    oracle = results.get("oracle") if isinstance(results.get("oracle"), dict) else {}
+    evidence = {
+        "run_id": run_id,
+        "state": status.get("state"),
+        "terminal_reason": status.get("terminal_reason"),
+        "oracle": oracle,
+    }
+    try:
+        evidence_path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        raise RemoteClientError(0, "archive_write", "Could not save the Oracle exception evidence.") from error
 
 
 def remote_exit_code(status: dict[str, object], results: dict[str, object]) -> int:
@@ -1596,10 +1680,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
         remote_exit = remote_exit_code(status, results)
         manifest: dict[str, object] | None = None
         archive_destination: Path | None = None
-        should_archive = bool(args.archive_completed) and status.get("state") not in {
-            "ORACLE_FAILED",
-            "ORACLE_EXCEPTION",
-        }
+        should_archive = bool(args.archive_completed) and status.get("state") != "ORACLE_FAILED"
         if not args.archive_completed:
             print("remote archive: skipped (--no-archive-completed)", flush=True)
             cleanup_remote_archive_download(args.completed_trajectories_dir, run_id)
@@ -1646,6 +1727,13 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     args.completed_trajectories_dir,
                     task_root.name,
                 )
+                if status.get("state") == "ORACLE_EXCEPTION":
+                    write_remote_oracle_exception_evidence(
+                        archive_destination,
+                        run_id,
+                        status,
+                        results,
+                    )
         state.update({
             "run_id": run_id,
             "service_url": base,
