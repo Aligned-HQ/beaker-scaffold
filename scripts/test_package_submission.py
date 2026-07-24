@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Regression checks for trajectory-based, non-blocking submission packaging."""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def make_fixture(root: Path, rewards: dict[str, list[int]]) -> None:
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("package-submission.sh", "check_trajectory_pass_rate.py"):
+        shutil.copy2(SCRIPT_DIR / name, scripts / name)
+    (scripts / "package-submission.sh").chmod(0o755)
+
+    (root / "task").mkdir()
+    (root / "skill-reports").mkdir()
+    trajectories = root / "trajectories"
+    trajectories.mkdir()
+    (trajectories / "README.md").write_text("trajectory fixture\n", encoding="utf-8")
+
+    trials: list[dict[str, object]] = []
+    for agent, agent_rewards in rewards.items():
+        agent_dir = trajectories / agent
+        agent_dir.mkdir()
+        for attempt, reward in enumerate(agent_rewards, 1):
+            trial_name = f"trial-{attempt}"
+            trial_dir = agent_dir / trial_name
+            (trial_dir / "verifier").mkdir(parents=True)
+            (trial_dir / "verifier/reward.txt").write_text(
+                f"{reward}\n", encoding="utf-8"
+            )
+            trials.append(
+                {
+                    "trial_id": f"{agent}-{attempt}",
+                    "phase": "agent",
+                    "agent_id": agent,
+                    "verdict": "PASS" if reward else "FAIL",
+                    "reward": reward,
+                    "finished_at": "2026-07-24T00:00:00Z",
+                    "trajectory_ref": f"fixture#trajectories/{agent}/{trial_name}",
+                }
+            )
+
+    (trajectories / "summary.json").write_text(
+        json.dumps({"trials": trials}, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def run_checker(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "python3",
+            str(root / "scripts/check_trajectory_pass_rate.py"),
+            "--trajectories",
+            str(root / "trajectories"),
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def check_checker_uses_trajectories() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-trajectory-check-") as raw:
+        root = Path(raw)
+        make_fixture(
+            root,
+            {
+                "claude-code": [0, 0, 0],
+                "codex": [0, 0, 0],
+                "gemini-cli": [0, 0, 0],
+            },
+        )
+        result = run_checker(root)
+        assert result.returncode == 0, result.stderr
+        assert "archived trajectories" in result.stdout
+
+
+def check_packaging_warns_but_continues() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-package-submission-") as raw:
+        root = Path(raw)
+        make_fixture(
+            root,
+            {
+                "claude-code": [1, 1, 0],
+                "codex": [0, 1, 1],
+                "gemini-cli": [1, 1, 1],
+            },
+        )
+        result = subprocess.run(
+            [str(root / "scripts/package-submission.sh")],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "\033[31mWARNING: task does not meet the submission criteria." in result.stderr
+        assert (root / "submission/task").is_dir()
+        assert (root / "submission/trajectories").is_dir()
+        assert (root / "submission/skill-reports").is_dir()
+        assert not (root / "harbor-jobs").exists()
+
+
+if __name__ == "__main__":
+    check_checker_uses_trajectories()
+    check_packaging_warns_but_continues()
+    print("Submission packaging checks passed")

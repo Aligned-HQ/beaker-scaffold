@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Cross-check trajectory pass rates against raw Harbor trial results."""
+"""Validate the agent pass rate using the archived trajectory evidence."""
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -11,7 +12,16 @@ from pathlib import Path
 
 
 AGENTS = ("claude", "codex", "gemini")
-RUN_ID_RE = re.compile(r"^# Harbor Run Summary:\s*(\S+)\s*$", re.MULTILINE)
+AGENT_DIRECTORIES = {
+    "claude": ("claude-code", "claude"),
+    "codex": ("codex",),
+    "gemini": ("gemini-cli", "gemini"),
+}
+DISPLAY_NAMES = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "gemini": "Gemini",
+}
 COUNT_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)")
 
 
@@ -22,7 +32,7 @@ class Counts:
 
 
 class PassRateError(Exception):
-    """A malformed or inconsistent pass-rate input."""
+    """A malformed or inconsistent trajectory pass-rate input."""
 
 
 def table_cells(line: str) -> list[str] | None:
@@ -41,16 +51,21 @@ def classify(value: object) -> str | None:
     return None
 
 
-def parse_summary(path: Path) -> tuple[str, dict[str, Counts]]:
+def parse_count(value: str, source: str) -> Counts:
+    match = COUNT_RE.match(value)
+    if match is None:
+        raise PassRateError(f"{source} has an invalid pass count: {value!r}")
+    passed, trials = (int(match.group(index)) for index in (1, 2))
+    if trials < 1 or passed > trials:
+        raise PassRateError(f"{source} has an invalid pass count: {value!r}")
+    return Counts(passed, trials)
+
+
+def parse_markdown_summary(path: Path) -> dict[str, Counts]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise PassRateError(f"could not read trajectory summary {path}: {exc}") from exc
-
-    run_match = RUN_ID_RE.search(text)
-    if run_match is None:
-        raise PassRateError(f"trajectory summary is missing its Harbor run ID: {path}")
-    run_id = run_match.group(1)
 
     lines = text.splitlines()
     header_index: int | None = None
@@ -88,136 +103,268 @@ def parse_summary(path: Path) -> tuple[str, dict[str, Counts]]:
         oracle_cell = cells[1].strip()
         if not task_cell or task_cell == "---" or not oracle_cell:
             continue
-        parsed: dict[str, tuple[int, int]] = {}
-        for agent, column in columns.items():
-            match = COUNT_RE.match(cells[column])
-            if match is None:
-                raise PassRateError(
-                    f"summary has an invalid {agent} pass count for task {task_cell!r}"
-                )
-            parsed[agent] = (int(match.group(1)), int(match.group(2)))
         rows += 1
-        for agent, (passed, trials) in parsed.items():
-            totals[agent][0] += passed
-            totals[agent][1] += trials
+        for agent, column in columns.items():
+            counts = parse_count(
+                cells[column], f"summary {agent} pass count for task {task_cell!r}"
+            )
+            totals[agent][0] += counts.passed
+            totals[agent][1] += counts.trials
 
     if not rows or any(trials == 0 for _, trials in totals.values()):
         raise PassRateError("summary.md does not contain complete agent pass counts")
-    return run_id, {
+    return {
         agent: Counts(passed, trials)
         for agent, (passed, trials) in totals.items()
     }
 
 
-def json_object(path: Path) -> dict[str, object]:
+def json_object(path: Path, description: str) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise PassRateError(f"could not read Harbor result {path}: {exc}") from exc
+        raise PassRateError(f"could not read {description} {path}: {exc}") from exc
     if not isinstance(value, dict):
-        raise PassRateError(f"Harbor result is not a JSON object: {path}")
+        raise PassRateError(f"{description} is not a JSON object: {path}")
     return value
 
 
-def config_agent_names(job_dir: Path, result_paths: list[Path]) -> list[str]:
-    values: list[str] = []
-    config_paths = [job_dir / "config.json"]
-    config_paths.extend(result.parent / "config.json" for result in result_paths)
-    seen: set[Path] = set()
-    for config_path in config_paths:
-        if config_path in seen or not config_path.is_file():
-            continue
-        seen.add(config_path)
-        config = json_object(config_path)
-        agent = config.get("agent")
-        if isinstance(agent, dict):
-            for key in ("name", "id", "label"):
-                if agent.get(key):
-                    values.append(str(agent[key]))
-        agents = config.get("agents")
-        if isinstance(agents, list):
-            for item in agents:
-                if isinstance(item, dict):
-                    for key in ("name", "id", "label"):
-                        if item.get(key):
-                            values.append(str(item[key]))
-    return values
+def reward_from_result(result: dict[str, object]) -> float | None:
+    verifier_result = result.get("verifier_result")
+    if not isinstance(verifier_result, dict):
+        return None
+    rewards = verifier_result.get("rewards")
+    if not isinstance(rewards, dict):
+        return None
+    reward = rewards.get("reward")
+    if not isinstance(reward, (int, float)) or isinstance(reward, bool):
+        return None
+    return float(reward)
 
 
-def classify_job(job_dir: Path, result_paths: list[Path]) -> str | None:
-    labels = [job_dir.name, *config_agent_names(job_dir, result_paths)]
-    classified = {agent for label in labels if (agent := classify(label)) is not None}
-    if "oracle" in classified:
-        return "oracle"
-    classified -= {"oracle"}
-    if len(classified) > 1:
-        raise PassRateError(
-            f"Harbor job has conflicting agent identities: {job_dir} ({sorted(classified)})"
-        )
-    return next(iter(classified), None)
+def reward_from_file(path: Path) -> float:
+    try:
+        value = float(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError) as exc:
+        raise PassRateError(f"could not read trajectory reward {path}: {exc}") from exc
+    if not math.isfinite(value):
+        raise PassRateError(f"trajectory reward is not finite: {path}")
+    return value
 
 
-def raw_job_counts(job_dir: Path, result_paths: list[Path]) -> Counts:
-    passed = 0
-    finished = 0
-    unfinished = 0
-    for result_path in result_paths:
-        result = json_object(result_path)
-        if not result.get("finished_at"):
-            unfinished += 1
-            continue
-        finished += 1
-        verifier_result = result.get("verifier_result")
-        rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
-        reward = rewards.get("reward") if isinstance(rewards, dict) else None
-        if isinstance(reward, (int, float)) and not isinstance(reward, bool) and reward > 0:
-            passed += 1
-    if unfinished:
-        raise PassRateError(
-            f"Harbor job has {unfinished} unfinished trial(s): {job_dir}"
-        )
-    if not finished:
-        raise PassRateError(f"Harbor job has no finished trials: {job_dir}")
-    return Counts(passed, finished)
-
-
-def collect_raw_counts(jobs_dir: Path, run_id: str) -> dict[str, Counts]:
-    if not jobs_dir.is_dir():
-        raise PassRateError(f"Harbor jobs directory is missing: {jobs_dir}")
-
-    job_dirs = [
-        path
-        for path in sorted(jobs_dir.iterdir())
-        if path.is_dir() and path.name.startswith(f"{run_id}-")
+def direct_agent_dir(trajectories_dir: Path, agent: str) -> Path:
+    candidates = [
+        trajectories_dir / name
+        for name in AGENT_DIRECTORIES[agent]
+        if (trajectories_dir / name).is_dir()
     ]
-    if not job_dirs:
+    if not candidates:
         raise PassRateError(
-            f"no raw Harbor job output found for run {run_id!r} in {jobs_dir}"
+            f"trajectories/ is missing the {DISPLAY_NAMES[agent]} agent directory"
+        )
+    if len(candidates) > 1:
+        raise PassRateError(
+            f"trajectories/ contains multiple directories for {DISPLAY_NAMES[agent]}: "
+            + ", ".join(str(path) for path in candidates)
+        )
+    return candidates[0]
+
+
+def direct_trial_counts(trajectories_dir: Path) -> dict[str, Counts]:
+    counts: dict[str, Counts] = {}
+    for agent in AGENTS:
+        agent_dir = direct_agent_dir(trajectories_dir, agent)
+        trial_dirs = [
+            path
+            for path in sorted(agent_dir.iterdir())
+            if path.is_dir()
+            and (
+                (path / "result.json").is_file()
+                or (path / "verifier/reward.txt").is_file()
+            )
+        ]
+        if not trial_dirs:
+            raise PassRateError(
+                f"trajectories/{agent_dir.name}/ does not contain any trial evidence"
+            )
+
+        passed = 0
+        for trial_dir in trial_dirs:
+            result_path = trial_dir / "result.json"
+            reward_path = trial_dir / "verifier/reward.txt"
+            result: dict[str, object] | None = None
+            if result_path.is_file():
+                try:
+                    result = json_object(result_path, "trajectory result")
+                except PassRateError:
+                    if not reward_path.is_file():
+                        raise
+
+            if result is not None and not result.get("finished_at"):
+                raise PassRateError(
+                    f"trajectory trial is unfinished: {trial_dir}"
+                )
+
+            reward = reward_from_result(result) if result is not None else None
+            if reward is None:
+                if not reward_path.is_file():
+                    raise PassRateError(
+                        f"trajectory trial is missing a verifier reward: {trial_dir}"
+                    )
+                reward = reward_from_file(reward_path)
+            if reward > 0:
+                passed += 1
+        counts[agent] = Counts(passed, len(trial_dirs))
+    return counts
+
+
+def validate_trajectory_reference(trajectories_dir: Path, reference: object) -> None:
+    if not isinstance(reference, str) or not reference.strip():
+        raise PassRateError("trajectory summary contains an invalid trajectory_ref")
+    relative = reference.split("#", 1)[-1]
+    if relative.startswith("trajectories/"):
+        relative = relative.removeprefix("trajectories/")
+    if not relative or relative.startswith("/"):
+        raise PassRateError(
+            "trajectory summary contains an unsafe trajectory_ref: "
+            f"{reference!r}"
+        )
+    root = trajectories_dir.resolve()
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise PassRateError(
+            f"trajectory summary contains an out-of-tree trajectory_ref: {reference!r}"
+        ) from exc
+    if not candidate.is_dir():
+        raise PassRateError(
+            f"trajectory summary references missing trajectory evidence: {candidate}"
         )
 
-    raw: dict[str, Counts] = {}
-    raw_sources: dict[str, Path] = {}
-    for job_dir in job_dirs:
-        result_paths = sorted(job_dir.glob("*/result.json"))
-        if not result_paths:
-            continue
-        agent = classify_job(job_dir, result_paths)
-        if agent is None or agent == "oracle":
-            continue
-        if agent in raw:
-            raise PassRateError(
-                f"multiple raw Harbor jobs found for {agent}: "
-                f"{raw_sources[agent]} and {job_dir}"
-            )
-        raw[agent] = raw_job_counts(job_dir, result_paths)
-        raw_sources[agent] = job_dir
 
-    missing = [agent for agent in AGENTS if agent not in raw]
+def summary_json_counts(path: Path, trajectories_dir: Path) -> dict[str, Counts]:
+    summary = json_object(path, "trajectory summary")
+    trials = summary.get("trials")
+    if not isinstance(trials, list) or not trials:
+        raise PassRateError("trajectories/summary.json does not contain agent trials")
+
+    totals = {agent: [0, 0] for agent in AGENTS}
+    for index, trial in enumerate(trials, 1):
+        if not isinstance(trial, dict):
+            raise PassRateError(f"trajectory summary trial {index} is not an object")
+        phase = str(trial.get("phase") or "agent").lower()
+        agent = classify(trial.get("agent_id") or trial.get("agent") or "")
+        if phase == "oracle" or agent == "oracle":
+            continue
+        if agent not in AGENTS:
+            raise PassRateError(
+                f"trajectory summary trial {index} has an unknown agent: "
+                f"{trial.get('agent_id')!r}"
+            )
+        if not trial.get("finished_at"):
+            raise PassRateError(f"trajectory summary trial {index} is unfinished")
+        verdict = str(trial.get("verdict") or "").upper()
+        if verdict not in {"PASS", "FAIL", "EXCEPTION"}:
+            raise PassRateError(
+                f"trajectory summary trial {index} has an incomplete verdict: {verdict!r}"
+            )
+        reward = trial.get("reward")
+        if not isinstance(reward, (int, float)) or isinstance(reward, bool):
+            raise PassRateError(
+                f"trajectory summary trial {index} is missing a numeric reward"
+            )
+        if isinstance(trial.get("trajectory_ref"), str):
+            validate_trajectory_reference(trajectories_dir, trial["trajectory_ref"])
+        totals[agent][0] += int(float(reward) > 0)
+        totals[agent][1] += 1
+
+    missing = [agent for agent in AGENTS if totals[agent][1] == 0]
     if missing:
         raise PassRateError(
-            "raw Harbor output is missing agent jobs: " + ", ".join(missing)
+            "trajectories/summary.json is missing agent trials: " + ", ".join(missing)
         )
-    return raw
+    return {
+        agent: Counts(passed, trials)
+        for agent, (passed, trials) in totals.items()
+    }
+
+
+def counts_mismatch(
+    left: dict[str, Counts], right: dict[str, Counts], left_name: str, right_name: str
+) -> str | None:
+    mismatches = [
+        f"{agent}: {left_name} {format_counts(left[agent])}, "
+        f"{right_name} {format_counts(right[agent])}"
+        for agent in AGENTS
+        if left[agent] != right[agent]
+    ]
+    return "; ".join(mismatches) if mismatches else None
+
+
+def collect_trajectory_counts(trajectories_dir: Path) -> dict[str, Counts]:
+    if not trajectories_dir.is_dir():
+        raise PassRateError(f"trajectories directory is missing: {trajectories_dir}")
+
+    summary_json = trajectories_dir / "summary.json"
+    summary_md = trajectories_dir / "summary.md"
+    if summary_json.is_file():
+        summary_counts = summary_json_counts(summary_json, trajectories_dir)
+        has_agent_directory = any(
+            (trajectories_dir / directory).is_dir()
+            for directories in AGENT_DIRECTORIES.values()
+            for directory in directories
+        )
+        counts = (
+            direct_trial_counts(trajectories_dir)
+            if has_agent_directory
+            else summary_counts
+        )
+        if counts != summary_counts:
+            mismatch = counts_mismatch(
+                counts, summary_counts, "trajectory files", "summary.json"
+            )
+            raise PassRateError(
+                "trajectory evidence disagrees with summary.json: "
+                + (mismatch or "unknown mismatch")
+            )
+        if summary_md.is_file():
+            markdown_counts = parse_markdown_summary(summary_md)
+            mismatch = counts_mismatch(
+                counts, markdown_counts, "summary.json", "summary.md"
+            )
+            if mismatch:
+                raise PassRateError(
+                    "trajectory summaries disagree: " + mismatch
+                )
+        return counts
+
+    direct_counts: dict[str, Counts] | None = None
+    has_agent_directory = any(
+        (trajectories_dir / directory).is_dir()
+        for directories in AGENT_DIRECTORIES.values()
+        for directory in directories
+    )
+    if has_agent_directory:
+        direct_counts = direct_trial_counts(trajectories_dir)
+
+    if summary_md.is_file():
+        markdown_counts = parse_markdown_summary(summary_md)
+        if direct_counts is not None:
+            mismatch = counts_mismatch(
+                direct_counts, markdown_counts, "trajectory files", "summary.md"
+            )
+            if mismatch:
+                raise PassRateError(
+                    "trajectory evidence disagrees with summary.md: " + mismatch
+                )
+        return markdown_counts
+
+    if direct_counts is not None:
+        return direct_counts
+    raise PassRateError(
+        "trajectories/ must contain summary.json, summary.md, or direct agent trial evidence"
+    )
 
 
 def format_counts(counts: Counts) -> str:
@@ -226,46 +373,40 @@ def format_counts(counts: Counts) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--summary", type=Path, required=True)
-    parser.add_argument("--jobs", type=Path, required=True)
+    parser.add_argument(
+        "--trajectories",
+        "--trajectory-root",
+        dest="trajectories",
+        type=Path,
+        required=True,
+        help="archived trajectory directory (default layout: ./trajectories)",
+    )
     args = parser.parse_args()
 
     try:
-        run_id, summary_counts = parse_summary(args.summary)
-        raw_counts = collect_raw_counts(args.jobs, run_id)
-        mismatches = [
-            f"{agent}: summary {format_counts(summary_counts[agent])}, "
-            f"harbor-jobs {format_counts(raw_counts[agent])}"
-            for agent in AGENTS
-            if summary_counts[agent] != raw_counts[agent]
-        ]
-        if mismatches:
-            raise PassRateError(
-                "trajectory summary disagrees with raw Harbor output: "
-                + "; ".join(mismatches)
-            )
+        counts = collect_trajectory_counts(args.trajectories)
     except PassRateError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    rates = [raw_counts[agent].passed / raw_counts[agent].trials for agent in AGENTS]
+    rates = [counts[agent].passed / counts[agent].trials for agent in AGENTS]
     average = sum(rates) / len(rates)
+    rendered = ", ".join(
+        f"{DISPLAY_NAMES[agent]} {format_counts(counts[agent])} "
+        f"({counts[agent].passed / counts[agent].trials * 100:.1f}%)"
+        for agent in AGENTS
+    )
     if average >= 0.5:
         print(
-            "ERROR: average Claude/Codex/Gemini pass rate must be below 50% "
-            f"(raw Harbor output reports {average * 100:.1f}%); make the task "
-            "scientifically harder and rerun the agent campaign before submission",
+            "ERROR: task does not meet the submission criteria: the average "
+            "Claude/Codex/Gemini pass rate must be below 50% "
+            f"(trajectories report {average * 100:.1f}%: {rendered})",
             file=sys.stderr,
         )
         return 1
 
-    rendered = ", ".join(
-        f"{agent.title()} {format_counts(raw_counts[agent])} "
-        f"({raw_counts[agent].passed / raw_counts[agent].trials * 100:.1f}%)"
-        for agent in AGENTS
-    )
     print(
-        "Trajectory pass-rate check (raw harbor-jobs cross-check): "
+        "Trajectory pass-rate check (archived trajectories): "
         f"{rendered}; average {average * 100:.1f}% (< 50%)."
     )
     return 0

@@ -18,21 +18,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for source_name in task trajectories skill-reports harbor-jobs; do
+for source_name in task trajectories skill-reports; do
     source_path="${REPO_ROOT}/${source_name}"
     [[ -d "$source_path" ]] || die "required directory is missing: ${source_path}"
 done
 
 check_trajectory_pass_rate() {
-    local summary_path="${REPO_ROOT}/trajectories/summary.md"
-    [[ -f "$summary_path" ]] || die "required trajectory summary is missing: ${summary_path}"
     python3 "${REPO_ROOT}/scripts/check_trajectory_pass_rate.py" \
-        --summary "$summary_path" \
-        --jobs "${REPO_ROOT}/harbor-jobs" \
-        || die "could not validate trajectory pass rates against raw Harbor output"
+        --trajectories "${REPO_ROOT}/trajectories"
 }
 
-check_trajectory_pass_rate
+if ! check_trajectory_pass_rate; then
+    printf '%b\n' \
+        $'\033[31mWARNING: task does not meet the submission criteria. Packaging will continue so you can inspect the submission.\033[0m' \
+        >&2
+fi
 
 if [[ -e "$SUBMISSION_DIR" || -L "$SUBMISSION_DIR" ]]; then
     printf 'WARNING: %s already exists and will be overwritten. Continue? [y/N] ' \

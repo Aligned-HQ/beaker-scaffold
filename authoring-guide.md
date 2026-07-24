@@ -424,11 +424,12 @@ Run `package-submission` as the last local authoring step. It creates a
 ```
 
 If `submission/` already exists, the script asks for confirmation before
-replacing it. It checks `trajectories/summary.md` against the raw per-trial
-results under `harbor-jobs/` and requires the average Claude/Codex/Gemini
-pass rate to be strictly below 50%; Oracle is ignored. A rate of 50% or higher
-means the task must be made harder and rerun before it can be packaged.
-Remove generated caches, check that all intended inputs are tracked, and
-inspect the final diff.
+replacing it. It validates the archived trial evidence in `trajectories/`,
+using its `summary.json` or direct agent trial folders rather than the local
+Harbor job-output directory. The average Claude/Codex/Gemini pass rate should
+be strictly below 50%; Oracle is ignored. A rate of 50% or higher produces a
+red warning, but does not prevent packaging, so the assembled submission can
+still be inspected. Remove generated caches, check that all intended inputs
+are tracked, and inspect the final diff.
 
 Upload the resulting `submission/` directory to Workbench in the task you claimed.
