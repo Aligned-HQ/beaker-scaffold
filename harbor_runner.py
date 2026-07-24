@@ -139,9 +139,10 @@ def print_runner_panel(
     console.print(Panel(body, title=title, border_style=border_style))
 
 
-# One task has three default attempts, so larger concurrency would not add
-# useful parallelism for the standard campaign.
-DEFAULT_CONCURRENCY = 3
+# The standard campaign has one task and three attempts. Workbench's remote
+# per-agent concurrency is a fan-out multiplier, so keep it at one to avoid
+# turning those three attempts into nine trials per agent.
+DEFAULT_CONCURRENCY = 1
 MODAL_PLATFORM = "linux/amd64"
 MODAL_APP_NAME_PREFIX = "beaker"
 MODAL_RUN_MANIFEST_SUFFIX = ".modal-run.json"

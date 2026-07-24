@@ -98,7 +98,7 @@ python3 -m pip install -r requirements.txt
    Dockerfiles, creates separate immutable offline Oracle and internet-enabled
    agent snapshots, runs one Oracle attempt first, and starts the three agent
    jobs only if the Oracle passes. The defaults are 3 attempts with concurrency
-   3 per agent (9 trials per model, 27 total), with all three agent jobs started
+   1 per agent (3 trials per model, 9 total), with all three agent jobs started
    concurrently. A fresh run clears `harbor-jobs/`; use `--no-remote --resume`
    with the printed run ID to preserve and resume it.
    `--no-remote --archive-only` processes existing local output without clearing

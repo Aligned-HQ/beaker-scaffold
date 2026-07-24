@@ -359,7 +359,7 @@ def check_remote_error_without_agent_trials_keeps_compact_evidence() -> None:
     results = {
         "oracle": {"verdict": "PASS", "reward": 1},
         "summary": {
-            "agent_trials_expected": 27,
+            "agent_trials_expected": 9,
             "agent_trials_finished": 0,
             "exception_count": 0,
         },
@@ -667,7 +667,7 @@ def check_remote_service_error_skips_archive_download() -> None:
                 return 200, {
                     "oracle": {"verdict": "PASS", "reward": 1},
                     "summary": {
-                        "agent_trials_expected": 27,
+                        "agent_trials_expected": 9,
                         "agent_trials_finished": 0,
                         "exception_count": 0,
                     },
@@ -893,6 +893,19 @@ def check_remote_policy_wiring() -> None:
         raise AssertionError("remote policy allowed more than 30 total trials")
 
 
+def check_default_remote_trial_count() -> None:
+    args = SimpleNamespace(
+        run=[],
+        n_concurrent=None,
+        default_concurrency=harbor_runner.DEFAULT_CONCURRENCY,
+        repeats=3,
+    )
+    payload = harbor_runner.remote_agent_payload(args)
+    assert len(payload) == 3
+    assert all(item["concurrency"] == 1 for item in payload)
+    assert args.repeats * sum(int(item["concurrency"]) for item in payload) == 9
+
+
 def check_remote_progress_reporting() -> None:
     status = {
         "state": "AGENTS_RUNNING",
@@ -904,7 +917,7 @@ def check_remote_progress_reporting() -> None:
                 "id": "claude-opus",
                 "agent": "claude-code",
                 "state": "RUNNING",
-                "expected_trials": 9,
+                "expected_trials": 3,
                 "finished_trials": 2,
                 "pass_count": 1,
                 "fail_count": 1,
@@ -915,7 +928,7 @@ def check_remote_progress_reporting() -> None:
                 "id": "codex-gpt-5-5",
                 "agent": "codex",
                 "state": "QUEUED",
-                "expected_trials": 9,
+                "expected_trials": 3,
                 "finished_trials": 0,
                 "pass_count": 0,
                 "fail_count": 0,
@@ -925,7 +938,7 @@ def check_remote_progress_reporting() -> None:
                 "id": "gemini-pro",
                 "agent": "gemini-cli",
                 "state": "QUEUED",
-                "expected_trials": 9,
+                "expected_trials": 3,
                 "finished_trials": 0,
                 "pass_count": 0,
                 "fail_count": 0,
@@ -952,9 +965,9 @@ def check_remote_progress_reporting() -> None:
     assert "remote heartbeat:" not in rendered
     assert rendered.count("remote state: AGENTS_RUNNING") == 1
     assert "server updated: 2026-07-22T12:34:56.000Z" in rendered
-    assert "Claude Code: RUNNING 2/9 pass=1 fail=1" in rendered
-    assert "Codex: RUNNING 0/9 pass=0 fail=0" in rendered
-    assert "Gemini: RUNNING 0/9 pass=0 fail=0" in rendered
+    assert "Claude Code: RUNNING 2/3 pass=1 fail=1" in rendered
+    assert "Codex: RUNNING 0/3 pass=0 fail=0" in rendered
+    assert "Gemini: RUNNING 0/3 pass=0 fail=0" in rendered
     if harbor_runner.RICH_AVAILABLE:
         table_output = io.StringIO()
         console = harbor_runner.Console(file=table_output, force_terminal=False)
@@ -1055,6 +1068,7 @@ if __name__ == "__main__":
     check_remote_defaults_load_dotenv()
     check_remote_bundle_wiring()
     check_remote_policy_wiring()
+    check_default_remote_trial_count()
     check_remote_progress_reporting()
     check_remote_upload_progress()
     print("Harbor runner isolation checks passed")
