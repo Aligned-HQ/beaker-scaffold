@@ -85,77 +85,13 @@ python3 -m pip install -r requirements.txt
 
    ```bash
    # Default: Workbench remote run; create .env first and add the runner token.
-   cp .env.example .env
+   cp .env.example .env # first time only
    ./harbor_runner.py task
-   # Local Modal run: Harbor and Modal must be installed/authenticated.
-   ./harbor_runner.py task --no-remote
-   # Optional: pass names of existing Modal Secrets, never their values.
-   ./harbor_runner.py task --no-remote --modal-secret openai-api-key \
-     --modal-secret anthropic-api-key --modal-secret google-api-key
    ```
 
-   For local runs, the runner validates the offline source task and amd64
-   Dockerfiles, creates separate immutable offline Oracle and internet-enabled
-   agent snapshots, runs one Oracle attempt first, and starts the three agent
-   jobs only if the Oracle passes. The defaults are 3 attempts with concurrency
-   1 per agent (3 trials per model, 9 total), with all three agent jobs started
-   concurrently. A fresh run clears `harbor-jobs/`; use `--no-remote --resume`
-   with the printed run ID to preserve and resume it.
-   `--no-remote --archive-only` processes existing local output without clearing
-   it.
+   Each user must use their own scoped `WORKBENCH_RUNNER_TOKEN`; never share one token
+   across users. See the authoring guide for acquiring a token.
 
-   Modal control-plane authentication comes from the local Modal CLI/SDK. The
-   `--modal-secret` values are names of existing Modal Secrets containing the
-   provider credentials; their values stay in Modal. The runner gives each
-   local run a unique Modal App and stops only that app on normal completion or
-   local interruption by default. Use `--no-shutdown-modal` only when another
-   owner is handling cleanup. The host Docker daemon is used by the preceding
-   smoke test and image checks; the Harbor task jobs themselves run on Modal,
-   and this runner does not invoke local agent CLI processes.
-
-   The remote runner loads `.env` automatically. To invoke remote mode
-   explicitly, use `--remote`:
-
-   ```bash
-   cp .env.example .env
-   # Edit .env and paste your token from Workbench → Settings → Access token.
-   ./harbor_runner.py task --remote
-   ```
-
-   The `.env` file is ignored by Git and excluded from remote task bundles. Each
-   user must use their own scoped `WORKBENCH_RUNNER_TOKEN`; never share one token
-   across users. Remote mode does not accept local secret/env overrides because
-   Workbench owns the Modal and provider credential configuration.
-
-   Remote mode uploads one task bundle and selects the server-approved
-   `scientific-offline-v1` execution policy. Workbench keeps the submitted
-   `[environment].allow_internet = false` value for the Oracle, then creates an
-   agent-phase snapshot with `allow_internet = true`; no second task upload is
-   needed and the source `task.toml` is not changed. The terminal shows a Rich
-   transfer bar while the bundle is uploaded, followed by structured run and agent
-   progress panels.
-
-   Local runs show an Oracle spinner in a terminal and print an ordered agent
-   progress scoreboard every 30 seconds by default. On a successful,
-   exception-free run, the archive contains `trajectories/oracle/`,
-   `trajectories/claude-code/`, `trajectories/codex/`,
-   `trajectories/gemini-cli/`, and `trajectories/summary.md`. Partial runs do
-   not replace a previous successful direct archive; remote partial archives are
-   retained under `trajectories/<run-id>/` in the same layout. Remote runs print
-   one live Workbench progress table with Oracle and per-agent trial counts,
-   result summaries, and trajectory-download progress. Remote downloads retain
-   only the server's explicitly marked trajectory-only artifact; on success the
-   client promotes it to the same provider-directory layout and writes the
-   summary locally after fetching `/results`. The task
-   source, jobs, and runner logs are never downloaded. Nested `exception.txt`
-   files from Oracle and agent trial directories are retained alongside their
-   run evidence. The client refuses legacy/full archive manifests before
-   opening the download URL. If the service fails before creating any agent
-   trials, the runner saves status/results evidence and skips the large archive
-   download. Use
-   `--remote-progress-interval-sec SECONDS` to change the live table refresh
-   interval (30 seconds by default). Ctrl-C requests remote cancellation by
-   default; use `--no-cancel-on-interrupt` to leave the server run running.
 
 9. Review the completed trajectory:
 
