@@ -104,6 +104,9 @@ def check_packaging_warns_but_continues() -> None:
         )
         assert result.returncode == 0, result.stderr
         assert "\033[31mWARNING: task does not meet the submission criteria." in result.stderr
+        assert "Criteria details:" in result.stderr
+        assert "average Claude/Codex/Gemini pass rate" in result.stderr
+        assert "Claude 2/3" in result.stderr
         assert (root / "submission/task").is_dir()
         assert (root / "submission/trajectories").is_dir()
         assert (root / "submission/skill-reports").is_dir()

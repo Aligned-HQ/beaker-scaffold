@@ -28,10 +28,14 @@ check_trajectory_pass_rate() {
         --trajectories "${REPO_ROOT}/trajectories"
 }
 
-if ! check_trajectory_pass_rate; then
-    printf '%b\n' \
-        $'\033[31mWARNING: task does not meet the submission criteria. Packaging will continue so you can inspect the submission.\033[0m' \
-        >&2
+if validation_output="$(check_trajectory_pass_rate 2>&1)"; then
+    printf '%s\n' "$validation_output"
+else
+    red=$'\033[31m'
+    reset=$'\033[0m'
+    printf '%s\n' "${red}WARNING: task does not meet the submission criteria.${reset}" >&2
+    printf '%s\n' "${red}Criteria details: ${validation_output}${reset}" >&2
+    printf '%s\n' "${red}Packaging will continue so you can inspect the submission.${reset}" >&2
 fi
 
 if [[ -e "$SUBMISSION_DIR" || -L "$SUBMISSION_DIR" ]]; then
