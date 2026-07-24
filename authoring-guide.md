@@ -5,6 +5,9 @@
 These tasks are being created to train and evaluate AI systems on realistic
 scientific workflows in the drug discovery pipeline. A good task captures work that a researcher could plausibly perform in their own lab or analysis pipeline, including real data, method choices, validation, and a meaningful scientific result.
 
+For a stage-by-stage catalog of representative work, see
+[Drug discovery pipeline — representative tasks & tools](drug_discovery_pipeline.md).
+
 The task author creates three connected pieces:
 
 1. `instruction.md` describes the scientific question, available inputs,
