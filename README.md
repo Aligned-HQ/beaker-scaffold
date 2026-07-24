@@ -191,12 +191,13 @@ python3 -m pip install -r requirements.txt
     ```
 
     If `submission/` already exists, the script asks for confirmation before
-    replacing it. Packaging checks `trajectories/summary.md` against the raw
-    per-trial results under `harbor-jobs/` and requires the average
-    Claude/Codex/Gemini pass rate to be strictly below 50%; Oracle is ignored.
-    If the rate is 50% or higher, packaging fails and the task must be made
-    harder before rerunning the workflow. Upload the resulting `submission/`
-    directory to Workbench.
+    replacing it. Packaging validates the archived trial evidence in
+    `trajectories/` (including `summary.json` or the direct agent trial
+    folders); it does not require the local Harbor job-output directory. The
+    average Claude/Codex/Gemini pass rate should be strictly below 50%; Oracle
+    is ignored. If the task does not meet that criterion, packaging prints a
+    red warning but still creates `submission/` so the result can be inspected.
+    Upload the resulting `submission/` directory to Workbench.
 
 ## Layout
 
@@ -210,6 +211,7 @@ python3 -m pip install -r requirements.txt
 │   ├── check-setup.sh                # local toolchain and Docker check
 │   ├── validate_scaffold.py           # fast static contract check
 │   ├── test_harbor_runner.py          # runner isolation regression checks
+│   ├── test_package_submission.py     # trajectory packaging regression checks
 │   ├── run-skill.sh                   # shared agent-skill runner
 │   ├── run-task-fixer.sh              # task-fixer entrypoint
 │   ├── run-task-review.sh             # task-review entrypoint
