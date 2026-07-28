@@ -214,9 +214,9 @@ fi
 
 runner_test_file="${REPO_ROOT}/scripts/test_harbor_runner.py"
 if [[ -f "$runner_test_file" ]] && runner_test_output="$(PYTHONDONTWRITEBYTECODE=1 python3 "$runner_test_file" 2>&1)"; then
-    pass_check "Vendored Modal runner isolation tests pass"
+    pass_check "Vendored runner isolation tests pass"
 else
-    fail_check "Vendored Modal runner isolation tests failed: ${runner_test_output:-$runner_test_file is missing}" "Run PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py and fix the reported runner errors."
+    fail_check "Vendored runner isolation tests failed: ${runner_test_output:-$runner_test_file is missing}" "Run PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py and fix the reported runner errors."
 fi
 
 docker_path="$(command_path docker)"
@@ -302,7 +302,6 @@ else
     fail_check "Skill reports directory or skill-status.md is missing or not writable." "Restore writable skill-reports/ and skill-status.md so skill wrappers can save Markdown results and status updates."
 fi
 
-info_check "Modal is not checked: task campaigns run remotely on Workbench, and local validation and Oracle runs need only Docker and the Harbor CLI. Install the Modal SDK or CLI yourself only for a deliberate ./harbor_runner.py --no-remote --env modal run."
 info_check "Client policy: task environments must set allow_internet = false."
 info_check "Client policy: measure each built runtime/verifier image with docker image inspect and keep it <= 2,000,000,000 bytes."
 info_check "This check does not build images, authenticate agent CLIs, or contact network services."

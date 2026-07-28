@@ -181,20 +181,6 @@ cp .env.example .env
 
 Never commit, share, or reuse another author's `.env` or token.
 
-### Modal is optional
-
-Task campaigns run remotely against the Workbench Harbor service, and local
-validation and Oracle runs need only Docker and the Harbor CLI, so you do not
-need a Modal account or SDK for the documented workflow. `check-setup.sh` does
-not check for it. Install and configure it yourself only if you deliberately run
-`./harbor_runner.py task --no-remote --env modal` against your own Modal
-account:
-
-```bash
-python3 -m pip install --upgrade modal
-modal token new
-```
-
 ## 3. Edit the task bundle
 
 ### 3.1 Decide whether the workflow is worth benchmarking
@@ -459,7 +445,7 @@ outputs under `task/.runner-logs/`:
 ```
 
 The smoke mode does not build or run the separate Harbor verifier image and does
-not start an agent or Modal job. Use it to catch local packaging, path,
+not start an agent job. Use it to catch local packaging, path,
 solution, and reward-wiring errors before the remote run. Because the smoke
 test runs the verifier script inside the environment image, any dependency it
 needs must be available there. That is also exactly how the Nexus sandbox runs,

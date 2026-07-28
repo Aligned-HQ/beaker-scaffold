@@ -61,13 +61,6 @@ harbor --version                                   # 0.9.0 is known good
 Upgrade later with `uv tool upgrade harbor`. Source and examples:
 <https://github.com/harbor-framework/harbor>.
 
-**Modal is not required and is not checked.** Task campaigns run remotely on the
-Workbench Harbor service, and local validation and Oracle runs use Docker plus
-the Harbor CLI. You only need `python3 -m pip install modal` (and
-`modal token new`) if you deliberately run
-`./harbor_runner.py task --no-remote --env modal` against your own Modal
-account.
-
 These downloads are for the authoring machine; task environments must still run
 without internet access.
 
@@ -105,7 +98,7 @@ without internet access.
    ```
 
 8. Run the Harbor task runner. The default submits the single task to the
-   Workbench Harbor service; use `--no-remote` for a local Modal run.
+   Workbench Harbor service.
    Do not put API keys in task files or commit an `.env` file.
 
    ```bash
@@ -165,7 +158,7 @@ without internet access.
 ```text
 .
 ├── README.md                         # project-level handoff
-├── harbor_runner.py                  # Docker smoke test and isolated Modal/Harbor runner
+├── harbor_runner.py                  # Docker smoke test and isolated Harbor runner
 ├── authoring-guide.md                 # task-fixer/review/trajectory workflow
 ├── task_implemention.toml             # rubric consumed by task-review
 ├── scripts/
