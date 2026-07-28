@@ -1,4 +1,7 @@
-.PHONY: setup-check check check-strict runner-test run-smoke run-harbor run-task-fixer run-task-review run-trajectory-review verify-skill-runs
+.PHONY: setup setup-check check check-strict runner-test run-smoke run-harbor run-task-fixer run-task-review run-trajectory-review verify-skill-runs
+
+setup:
+	./scripts/setup.sh $(ARGS)
 
 setup-check:
 	./scripts/check-setup.sh $(ARGS)

@@ -17,18 +17,31 @@ configured timeouts within this limit.
    cd <task-project>
    ```
 
-2. Check your local authoring setup:
+2. Set up your local authoring environment:
+
+   ```bash
+   ./scripts/setup.sh          # add --yes to skip the prompts
+   source .venv/bin/activate   # in every new shell
+   ```
+
+   This creates a `.venv`, installs the pinned host dependencies and the Harbor
+   CLI, copies `.env.example` to `.env`, lists anything it cannot install for
+   you, and then runs `./scripts/check-setup.sh`. Rerun it any time; it reuses
+   an existing environment.
+
+   To verify an environment without changing it, run the check on its own:
 
    ```bash
    ./scripts/check-setup.sh
    ```
 
    This checks Python 3.11+, Git, Make, ripgrep, Codex or Claude Code, Harbor,
-   Docker, the vendored runner, the rubric, and the mirrored skills.
+   Docker, the vendored runner, the rubric, and the mirrored skills. It is
+   read-only: it reports missing tools but never installs packages or contacts
+   the network.
 
-**2b.** Install anything the check reports as missing, then run the check again.
-`check-setup.sh` is deliberately read-only: it reports missing tools but never
-installs packages or contacts the network.
+**2b.** `setup.sh` deliberately does not install Docker or an agent CLI, and it
+cannot create your Workbench token. Install those yourself:
 
 | Dependency | Needed for | Install |
 | --- | --- | --- |
@@ -46,10 +59,10 @@ start the daemon before any build, smoke test, or Oracle run. Verify with
 Settings → General → *Use Rosetta for x86/amd64 emulation*, because task
 Dockerfiles pin `FROM --platform=linux/amd64`.
 
-**Harbor.** Harbor is the harness that runs the task and its Oracle. Install it
-as an isolated tool with [uv](https://docs.astral.sh/uv/); Harbor itself
-requires Python 3.12 or newer, so an isolated install keeps it independent of
-the interpreter used by the scaffold scripts:
+**Harbor.** `setup.sh` installs the Harbor CLI for you. To do it by hand, use
+[uv](https://docs.astral.sh/uv/); Harbor requires Python 3.12 or newer, so an
+isolated tool install keeps it independent of the interpreter used by the
+scaffold scripts:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # skip if uv is already installed
@@ -162,6 +175,7 @@ without internet access.
 ├── authoring-guide.md                 # task-fixer/review/trajectory workflow
 ├── task_implemention.toml             # rubric consumed by task-review
 ├── scripts/
+│   ├── setup.sh                      # create the .venv, install deps, then check
 │   ├── check-setup.sh                # local toolchain and Docker check
 │   ├── validate_scaffold.py           # fast static contract check
 │   ├── test_harbor_runner.py          # runner isolation regression checks

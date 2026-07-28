@@ -51,9 +51,28 @@ cd <task-project>
 Keep the task in its own checkout. The skill wrappers, Markdown reports, status
 file, Harbor evidence, and trajectory archive are all part of the handoff.
 
-## 2. Check the local authoring toolchain
+## 2. Set up and check the local authoring toolchain
 
-Before editing a task, run the project setup check:
+Before editing a task, build the authoring environment:
+
+```bash
+./scripts/setup.sh          # add --yes to accept the documented installs
+source .venv/bin/activate   # in every new shell
+```
+
+`setup.sh` selects a Python 3.11+ interpreter (preferring 3.12+, which Harbor
+needs), creates `.venv`, installs `requirements.txt` into it, installs the
+Harbor CLI, copies `.env.example` to `.env`, prints a `STEPS LEFT FOR YOU` list
+for anything it cannot install, and finishes by running `check-setup.sh`. It is
+safe to rerun: an existing environment is reused. Docker, Claude Code, and Codex
+are never installed automatically, and the only network download it can start
+without asking first is the Python dependency install (`--yes` also allows the
+uv bootstrap from <https://astral.sh>).
+
+Activation matters: `harbor_runner.py` runs under the `python3` on your `PATH`,
+so `check-setup.sh` warns when `.venv` exists but is not active.
+
+To verify an environment without changing it, run the check on its own:
 
 ```bash
 ./scripts/check-setup.sh
@@ -80,14 +99,10 @@ FROM --platform=linux/amd64 python:3.12-slim
 
 ## 2b. Install or update required tools and libraries
 
-`check-setup.sh` is intentionally read-only: it reports missing tools but does
-not install packages or contact network services. Install or update each missing
-dependency using the package source approved for your workstation, then rerun
-the check:
-
-```bash
-./scripts/check-setup.sh
-```
+Use this section for the dependencies `setup.sh` cannot install for you (Docker
+and an agent CLI), for a manual install on a locked-down workstation, or when
+the check reports something out of date. `check-setup.sh` itself is read-only:
+it reports missing tools but never installs packages or contacts the network.
 
 Everything below is installed on the authoring machine only. Task environments
 still have to run with `allow_internet = false`, so nothing here may become a
@@ -120,9 +135,10 @@ build has to emulate that architecture locally.
 ### Harbor CLI
 
 Harbor is the harness that validates the task bundle and runs the Oracle
-locally. Install it as an isolated tool with [uv](https://docs.astral.sh/uv/).
-Harbor requires Python 3.12 or newer; an isolated tool install keeps that
-requirement separate from the interpreter the scaffold scripts use.
+locally. `setup.sh` installs it for you; to do it by hand, use
+[uv](https://docs.astral.sh/uv/). Harbor requires Python 3.12 or newer; an
+isolated tool install keeps that requirement separate from the interpreter the
+scaffold scripts use.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # or: brew install uv
@@ -139,7 +155,8 @@ examples: <https://github.com/harbor-framework/harbor>.
 
 The scaffold scripts need Python 3.11 or newer for `tomllib`
 (`brew install python@3.12`, or your distribution's package). The vendored
-runner uses Rich for terminal panels, tables, and transfer progress:
+runner uses Rich for terminal panels, tables, and transfer progress. `setup.sh`
+installs it into `.venv`; to install it into an environment you manage yourself:
 
 ```bash
 python3 -m pip install -r requirements.txt

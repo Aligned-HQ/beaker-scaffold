@@ -7,6 +7,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Local authoring environment created by ./scripts/setup.sh.
+.venv/
+
 .runner-logs/
 task/.runner-logs/
 task/output/

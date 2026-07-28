@@ -18,6 +18,13 @@ USAGE
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+# Probe the virtual environment created by ./scripts/setup.sh when it exists, so
+# this check reports on the interpreter that will hold the host dependencies.
+VENV_PYTHON="${REPO_ROOT}/.venv/bin/python3"
+PYTHON_BIN="python3"
+if [[ -x "$VENV_PYTHON" ]]; then
+    PYTHON_BIN="$VENV_PYTHON"
+fi
 STRICT=0
 FAILURES=0
 WARNINGS=0
@@ -126,10 +133,22 @@ check_required_command git "Source control" "Install Git; agent CLIs and task ha
 check_required_command make "Project shortcuts" "Install make or run the documented commands directly."
 check_required_command rg "Repository search" "Install ripgrep; the skills and reviews use rg."
 
-if rich_version="$(python3 -c 'from importlib.metadata import version; print(version("rich"))' 2>/dev/null)"; then
+if [[ -x "$VENV_PYTHON" ]]; then
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        pass_check "Project virtual environment is active: ${VIRTUAL_ENV}"
+    else
+        warn_check \
+            "Project virtual environment exists but is not active: ${REPO_ROOT}/.venv" \
+            "Run 'source ${REPO_ROOT}/.venv/bin/activate' before ./harbor_runner.py. This check probes the virtual environment directly, but the runner uses the python3 on your PATH."
+    fi
+else
+    info_check "No virtual environment at ${REPO_ROOT}/.venv; run ./scripts/setup.sh to create one. Checking the python3 on PATH instead."
+fi
+
+if rich_version="$("$PYTHON_BIN" -c 'from importlib.metadata import version; print(version("rich"))' 2>/dev/null)"; then
     pass_check "Rich terminal UI: Python package rich ${rich_version}"
 else
-    fail_check "Rich terminal UI: Python package rich is missing." "Install the pinned host dependency with: python3 -m pip install -r ${REPO_ROOT}/requirements.txt"
+    fail_check "Rich terminal UI: Python package rich is missing." "Run ./scripts/setup.sh, or install the pinned host dependency with: python3 -m pip install -r ${REPO_ROOT}/requirements.txt"
 fi
 
 workbench_env_file="${REPO_ROOT}/.env"
@@ -175,13 +194,13 @@ else
     fail_check "Hash utility: shasum or sha256sum is missing." "Install shasum or sha256sum; the skill wrappers need one to record report metadata."
 fi
 
-python_version_output="$(python3 --version 2>&1 || true)"
-if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+python_version_output="$("$PYTHON_BIN" --version 2>&1 || true)"
+if "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
     pass_check "Python version supports tomllib: $python_version_output"
 else
     fail_check "Python 3.11 or newer is required; found $python_version_output." "Install or select Python 3.11 or newer, then rerun this check."
 fi
-if python3 -c 'import tomllib' >/dev/null 2>&1; then
+if "$PYTHON_BIN" -c 'import tomllib' >/dev/null 2>&1; then
     pass_check "Python standard library includes tomllib"
 else
     fail_check "Python tomllib is unavailable." "Use Python 3.11 or newer, which includes tomllib in the standard library."
@@ -213,7 +232,7 @@ else
 fi
 
 runner_test_file="${REPO_ROOT}/scripts/test_harbor_runner.py"
-if [[ -f "$runner_test_file" ]] && runner_test_output="$(PYTHONDONTWRITEBYTECODE=1 python3 "$runner_test_file" 2>&1)"; then
+if [[ -f "$runner_test_file" ]] && runner_test_output="$(PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" "$runner_test_file" 2>&1)"; then
     pass_check "Vendored runner isolation tests pass"
 else
     fail_check "Vendored runner isolation tests failed: ${runner_test_output:-$runner_test_file is missing}" "Run PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py and fix the reported runner errors."
@@ -251,14 +270,14 @@ else
 fi
 
 local_runner_file="${REPO_ROOT}/harbor_runner.py"
-if [[ -x "$local_runner_file" ]] && local_runner_help="$(python3 "$local_runner_file" --help 2>&1)"; then
+if [[ -x "$local_runner_file" ]] && local_runner_help="$("$PYTHON_BIN" "$local_runner_file" --help 2>&1)"; then
     pass_check "Vendored runner (Harbor and Docker smoke modes): $local_runner_file responds to --help"
 else
     fail_check "Vendored runner is missing, not executable, or cannot start: $local_runner_file" "Restore harbor_runner.py, make it executable, and confirm that python3 harbor_runner.py --help succeeds."
 fi
 
 rubric_file="${REPO_ROOT}/task_implemention.toml"
-if [[ -f "$rubric_file" ]] && python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$rubric_file" >/dev/null 2>&1; then
+if [[ -f "$rubric_file" ]] && "$PYTHON_BIN" -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$rubric_file" >/dev/null 2>&1; then
     pass_check "Task-review rubric: $rubric_file is valid TOML"
 else
     fail_check "Task-review rubric is missing or invalid: $rubric_file" "Restore a valid task_implemention.toml file at the repository root and rerun this check."
