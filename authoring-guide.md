@@ -180,7 +180,9 @@ For generated data, check in a deterministic generator such as `environment/gene
 
 ### 3.5 Isolate and harden the verifier
 
-The scaffold defaults to `environment_mode = "separate"`. The verifier build context is `task/tests/`, so its Dockerfile must use `COPY` paths relative to that directory:
+The Nexus sandbox runs the agent and the verifier in **one container** and ignores `[verifier].environment_mode`, so the scaffold leaves it unset. Everything `tests/test.sh` imports must be installed by `environment/Dockerfile` — that is why `task/environment/wheels/` mirrors `task/tests/wheels/`. Adding a verifier dependency to only one of them passes locally and then fails on submission with `No module named pytest`.
+
+The verifier Dockerfile still exists for local two-image runs. Its build context is `task/tests/`, so its `COPY` paths are relative to that directory:
 
 ```dockerfile
 COPY test.sh ${TESTS_DIR}/test.sh
@@ -358,8 +360,8 @@ The smoke mode does not build or run the separate Harbor verifier image and does
 not start an agent or Modal job. Use it to catch local packaging, path,
 solution, and reward-wiring errors before the remote run. Because the smoke
 test runs the verifier script inside the environment image, any dependency it
-needs must be available there; the Harbor run remains the authoritative check
-for the separate verifier image.
+needs must be available there. That is also exactly how the Nexus sandbox runs,
+so a passing smoke test is a good predictor of submission behaviour.
 
 ## 8. Run the Harbor task runner
 

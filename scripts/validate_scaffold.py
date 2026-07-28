@@ -95,6 +95,7 @@ ALLOWED_TABLE_KEYS = {
         "gpus",
         "gpu_types",
         "allow_internet",
+        "network_mode",
         "env",
         "skills_dir",
         "mcp_servers",
@@ -203,8 +204,14 @@ class Checker:
         verifier = config.get("verifier", {})
         agent = config.get("agent", {})
         environment = config.get("environment", {})
-        if not isinstance(verifier, dict) or verifier.get("environment_mode") != "separate":
-            self.warn('default scaffold expects [verifier].environment_mode = "separate"')
+        if isinstance(verifier, dict) and verifier.get("environment_mode") == "separate":
+            # The Nexus sandbox ignores environment_mode and runs one container.
+            # Declaring "separate" hides the fact that the verifier's imports must
+            # already be present in the environment image.
+            self.warn(
+                '[verifier].environment_mode = "separate" is ignored by the Nexus '
+                "sandbox; the verifier runs in the environment image"
+            )
         for section_name, section in (("verifier", verifier), ("agent", agent)):
             try:
                 valid_timeout = isinstance(section, dict) and float(
@@ -225,7 +232,43 @@ class Checker:
                 self.error(f"[environment].{key} must be positive")
         if not isinstance(environment, dict) or environment.get("allow_internet") is not False:
             self.error("client policy requires [environment].allow_internet = false")
+        network_mode = environment.get("network_mode") if isinstance(environment, dict) else None
+        if network_mode is None:
+            self.warn('[environment].network_mode = "no-network" is not set')
+        elif network_mode != "no-network":
+            self.error(
+                f'[environment].network_mode must be "no-network", found "{network_mode}"'
+            )
         return config
+
+    def check_verifier_deps_in_environment(self) -> None:
+        """The sandbox runs one container, so whatever test.sh imports has to be
+        installed by environment/Dockerfile. A task that relies on the verifier
+        image for those imports passes locally and fails on submission."""
+        env_dockerfile = self.task / "environment/Dockerfile"
+        tests_requirements = self.task / "tests/wheels/requirements.txt"
+        if not env_dockerfile.is_file() or not tests_requirements.is_file():
+            return
+        # Strip comments: a package named only in prose must not satisfy the check.
+        env_text = "\n".join(
+            line
+            for line in env_dockerfile.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        for line in tests_requirements.read_text(encoding="utf-8").splitlines():
+            package = line.strip().split("==")[0].split(">=")[0].strip()
+            if not package or package.startswith("#"):
+                continue
+            env_wheels = self.task / "environment/wheels"
+            installed = env_wheels.is_dir() and any(
+                package.replace("-", "_").lower() in wheel.name.replace("-", "_").lower()
+                for wheel in env_wheels.glob("*.whl")
+            )
+            if not installed and package not in env_text:
+                self.error(
+                    f"verifier dependency '{package}' is not installed by "
+                    "environment/Dockerfile; the sandbox runs a single container"
+                )
 
     def check_executables(self) -> None:
         for relative in ("solution/solve.sh", "tests/test.sh"):
@@ -346,6 +389,7 @@ class Checker:
     def run(self) -> int:
         self.check_layout()
         self.check_toml()
+        self.check_verifier_deps_in_environment()
         self.check_executables()
         self.check_dockerfiles()
         self.check_scripts()

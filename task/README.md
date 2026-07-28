@@ -31,7 +31,12 @@ copies only `environment/data/`, creates the non-root `agent` user, and has no
 networked package or agent-bootstrap step. The verifier Dockerfile copies its
 existing test files and data, installs its vendored wheels with
 `--no-index --find-links`, and creates the verifier log and output directories.
-The task metadata disables internet access and uses separate verifier mode.
+The task metadata disables internet access and sets `network_mode = "no-network"`.
+
+The environment image also installs the verifier's wheels. The Nexus sandbox
+runs a single container and ignores `[verifier].environment_mode`, so anything
+`tests/test.sh` imports must already exist in the environment image; the
+verifier Dockerfile is only used for local two-image runs.
 
 ## Maintainer notes for a real task
 

@@ -23,8 +23,11 @@ verification_explanation = "Replace this with an evidence-based description of t
 
 [verifier]
 timeout_sec = 300.0
-environment_mode = "separate"
 user = "root"
+# environment_mode is intentionally unset. The Nexus sandbox ignores it and runs
+# the agent and verifier in one container, so the verifier's dependencies live in
+# environment/Dockerfile. Setting "separate" here would pass locally and then
+# fail on submission with "No module named pytest".
 
 [agent]
 timeout_sec = 1800.0
@@ -36,4 +39,8 @@ cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 gpus = 0
+# The sandbox is air-gapped. allow_internet is deprecated in favour of
+# network_mode, and setting it true implies network_mode = "public", which fails
+# pre-validation immediately. Vendor every dependency into the image instead.
 allow_internet = false
+network_mode = "no-network"

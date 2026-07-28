@@ -193,7 +193,7 @@ complete verdict.
 
 ## Authoring boundary
 
-The agent should see the scientific question, public inputs, constraints, and exact output schema in `task/instruction.md`. It should not see the reference solution, hidden truth, or verifier-only fixtures. Put agent inputs in `task/environment/data/`; put hidden references in `task/tests/data/` and copy them only into the separate verifier image. Keep all paths rooted in Harbor's canonical variables: `WORKSPACE_DIR`, `DATA_DIR`, `OUTPUT_DIR`, `SOLUTION_DIR`, `TESTS_DIR`, and `LOG_DIR`.
+The agent should see the scientific question, public inputs, constraints, and exact output schema in `task/instruction.md`. It should not see the reference solution, hidden truth, or verifier-only fixtures. Put agent inputs in `task/environment/data/`; put hidden references in `task/tests/data/`, which ships in the submission archive and is extracted to `/tests/`. Do not depend on a builder stage in `tests/Dockerfile` to generate hidden truth: the Nexus sandbox runs one container and never builds that image, so anything it would have produced simply will not exist. Keep all paths rooted in Harbor's canonical variables: `WORKSPACE_DIR`, `DATA_DIR`, `OUTPUT_DIR`, `SOLUTION_DIR`, `TESTS_DIR`, and `LOG_DIR`.
 
 The starter `task/` uses `input.csv` and a simple summary only to prove that the mounts, output paths, and reward file work. Replace that contract before asking agents to solve the task. The finished task should represent a real expert workflow with meaningful method choices, intermediate validation, and a substantive machine-checkable result; a long schema or a toy transform is not enough.
 
