@@ -11,7 +11,6 @@ FROM --platform=linux/amd64 python:3.12-slim
 ENV WORKSPACE_DIR=/workspace \
     DATA_DIR=/workspace/data \
     OUTPUT_DIR=/workspace/output \
-    OUTPUT_PATH=/workspace/output/result.json \
     SOLUTION_DIR=/solution \
     TESTS_DIR=/tests \
     LOG_DIR=/logs/verifier

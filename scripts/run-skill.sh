@@ -171,6 +171,59 @@ if [[ "$RUNNER" = claude && ( "$SKILL" = task-fixer || "$SKILL" = task-review ) 
     CLAUDE_ALLOW_DANGEROUS=1
 fi
 
+# An agent CLI that predates one of the flags below fails deep inside the run
+# with an opaque parser error. Probe --help first and name the upgrade instead.
+CLAUDE_KNOWN_GOOD_VERSION="2.1.220"
+CODEX_KNOWN_GOOD_VERSION="0.145.0"
+
+runner_help_text() {
+    if [[ "$RUNNER" = codex ]]; then
+        { "$RUNNER_BIN" --help; "$RUNNER_BIN" exec --help; } 2>&1
+    else
+        "$RUNNER_BIN" --help 2>&1
+    fi
+}
+
+require_runner_flags() {
+    local help_text required=() missing=() flag
+    if [[ "$RUNNER" = codex ]]; then
+        required=(--ask-for-approval --sandbox --skip-git-repo-check --cd)
+    else
+        required=(--print --no-session-persistence --permission-mode --add-dir)
+        ((CLAUDE_ALLOW_DANGEROUS)) && required+=(--allow-dangerously-skip-permissions)
+    fi
+
+    help_text="$(runner_help_text || true)"
+    # An unreadable --help is not evidence of an old CLI; let the run proceed.
+    [[ -n "$help_text" ]] || return 0
+
+    for flag in "${required[@]}"; do
+        grep -q -- "$flag" <<<"$help_text" || missing+=("$flag")
+    done
+    ((${#missing[@]} > 0)) || return 0
+
+    local version upgrade known_good
+    version="$("$RUNNER_BIN" --version 2>&1 | head -n 1)"
+    if [[ "$RUNNER" = codex ]]; then
+        upgrade="codex update  (or: npm install -g @openai/codex@latest)"
+        known_good="$CODEX_KNOWN_GOOD_VERSION"
+    else
+        upgrade="claude update  (or: npm install -g @anthropic-ai/claude-code@latest)"
+        known_good="$CLAUDE_KNOWN_GOOD_VERSION"
+    fi
+
+    printf 'ERROR: %s is too old for the skill wrappers.\n' "$RUNNER" >&2
+    printf '  installed:   %s (%s)\n' "$version" "$RUNNER_BIN" >&2
+    printf '  missing:     %s\n' "${missing[*]}" >&2
+    printf '  known good:  %s %s\n' "$RUNNER" "$known_good" >&2
+    printf '  upgrade:     %s\n' "$upgrade" >&2
+    printf 'Then rerun this command, or use --runner %s to try the other CLI.\n' \
+        "$([[ "$RUNNER" = codex ]] && printf 'claude' || printf 'codex')" >&2
+    exit 2
+}
+
+require_runner_flags
+
 SKILL_FILE="${SKILL_ROOT}/${SKILL}/SKILL.md"
 [[ -f "$SKILL_FILE" ]] || die "missing local skill file: $SKILL_FILE"
 
@@ -544,7 +597,10 @@ else
         if ((CLAUDE_ALLOW_DANGEROUS)); then
             CLAUDE_ARGS+=(--allow-dangerously-skip-permissions)
         fi
-        "$RUNNER_BIN" "${CLAUDE_ARGS[@]}" "$PROMPT"
+        # --add-dir is variadic, so the prompt has to be separated from the
+        # option list with --; otherwise it is parsed as another directory and
+        # claude exits with "Input must be provided ... when using --print".
+        "$RUNNER_BIN" "${CLAUDE_ARGS[@]}" -- "$PROMPT"
     ) 2>&1 | tee "$OUTPUT_TMP"
     EXIT_CODE=${PIPESTATUS[0]}
 fi

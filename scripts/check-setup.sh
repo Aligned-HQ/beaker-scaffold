@@ -206,18 +206,57 @@ else
     fail_check "Python tomllib is unavailable." "Use Python 3.11 or newer, which includes tomllib in the standard library."
 fi
 
+# scripts/run-skill.sh drives the agent CLIs with these flags. A CLI that
+# predates one of them fails mid-run with an opaque parser error, so report the
+# gap here with the upgrade command instead.
+CLAUDE_KNOWN_GOOD_VERSION="2.1.220"
+CODEX_KNOWN_GOOD_VERSION="0.145.0"
+CLAUDE_REQUIRED_FLAGS=(--print --no-session-persistence --permission-mode --add-dir --allow-dangerously-skip-permissions)
+CODEX_REQUIRED_FLAGS=(--ask-for-approval --sandbox --skip-git-repo-check --cd)
+
+agent_missing_flags() {
+    local command_name="$1"
+    shift
+    local help_text missing=() flag
+    if [[ "$command_name" = codex ]]; then
+        help_text="$({ "$command_name" --help; "$command_name" exec --help; } 2>&1 || true)"
+    else
+        help_text="$("$command_name" --help 2>&1 || true)"
+    fi
+    # Treat an unreadable --help as "cannot tell" rather than "too old".
+    [[ -n "$help_text" ]] || return 0
+    for flag in "$@"; do
+        grep -q -- "$flag" <<<"$help_text" || missing+=("$flag")
+    done
+    printf '%s' "${missing[*]:-}"
+}
+
 agent_count=0
 for agent_command in codex claude; do
     agent_path="$(command_path "$agent_command")"
-    if [[ -n "$agent_path" ]]; then
-        agent_count=$((agent_count + 1))
-        pass_check "Agent CLI: ${agent_command} at ${agent_path} ($(command_version "$agent_command"))"
-    else
+    if [[ -z "$agent_path" ]]; then
         warn_check "Agent CLI: ${agent_command} is not installed." "Install Codex or Claude Code; at least one supported agent CLI is required."
+        continue
+    fi
+    agent_version="$(command_version "$agent_command")"
+    if [[ "$agent_command" = codex ]]; then
+        agent_missing="$(agent_missing_flags codex "${CODEX_REQUIRED_FLAGS[@]}")"
+        agent_upgrade="Upgrade it with 'codex update' (or: npm install -g @openai/codex@latest); codex ${CODEX_KNOWN_GOOD_VERSION} is known good."
+    else
+        agent_missing="$(agent_missing_flags claude "${CLAUDE_REQUIRED_FLAGS[@]}")"
+        agent_upgrade="Upgrade it with 'claude update' (or: npm install -g @anthropic-ai/claude-code@latest); claude ${CLAUDE_KNOWN_GOOD_VERSION} is known good."
+    fi
+    if [[ -z "$agent_missing" ]]; then
+        agent_count=$((agent_count + 1))
+        pass_check "Agent CLI: ${agent_command} at ${agent_path} (${agent_version})"
+    else
+        warn_check \
+            "Agent CLI: ${agent_command} (${agent_version}) is too old for the skill wrappers; missing: ${agent_missing}" \
+            "${agent_upgrade} Then rerun ./scripts/check-setup.sh."
     fi
 done
 if ((agent_count == 0)); then
-    fail_check "Agent CLI: neither Claude Code nor Codex is installed." "Install Claude Code or Codex before running the skill wrappers."
+    fail_check "Agent CLI: no installed Claude Code or Codex supports the flags the skill wrappers use." "Install or upgrade one: 'claude update' / npm install -g @anthropic-ai/claude-code@latest, or 'codex update' / npm install -g @openai/codex@latest."
 fi
 
 harbor_path="$(command_path harbor)"
