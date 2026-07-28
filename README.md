@@ -56,7 +56,22 @@ to the evaluation, state it clearly in `instruction.md`; otherwise an agent
 failure may reflect an underspecified task rather than a genuine scientific
 failure.
 
- Follow these steps in order; the sections under step 3 explain how to build a scientifically credible task, which the fixer and reviews then harden.
+Follow these steps in order. Start with step 0 to refine the proposal in
+Workbench; the sections under step 3 explain how to build a scientifically
+credible task, which the fixer and reviews then harden.
+
+## 0. Proposal
+
+Before building the submission, iterate on the task proposal in
+[Aligned Workbench](https://workbench.alignedhq.ai):
+
+1. Open the **Beaker Campaign** queue and claim a task for the area of the drug
+   discovery pipeline you want to author.
+2. Open the claimed task, paste the task you want to author into the **Task
+   proposal** text box, and request a proposal review.
+3. Read the expert feedback, revise the proposal, and request another review.
+   Iterate until you believe the task is well-scoped, scientifically
+   meaningful, and likely to pass before you build the submission.
 
 ## 1. Clone the repository
 
@@ -599,7 +614,8 @@ red warning, but does not prevent packaging, so the assembled submission can
 still be inspected. Remove generated caches, check that all intended inputs
 are tracked, and inspect the final diff.
 
-Upload the resulting `submission/` directory to Workbench in the task you claimed.
+Upload the resulting `submission/` directory to the Workbench task you claimed
+in step 0.
 
 ## Layout
 
