@@ -88,9 +88,7 @@ needs), creates `.venv`, installs `requirements.txt` into it, installs the
 Harbor CLI, copies `.env.example` to `.env`, prints a `STEPS LEFT FOR YOU` list
 for anything it cannot install, and finishes by running `check-setup.sh`. It is
 safe to rerun: an existing environment is reused. Docker, Claude Code, and Codex
-are never installed automatically, and the only network download it can start
-without asking first is the Python dependency install (`--yes` also allows the
-uv bootstrap from <https://astral.sh>).
+are never installed automatically.
 
 Activation matters: `harbor_runner.py` runs under the `python3` on your `PATH`,
 so `check-setup.sh` warns when `.venv` exists but is not active.
@@ -101,25 +99,6 @@ To verify an environment without changing it, run the check on its own:
 ./scripts/check-setup.sh
 ```
 
-It checks Python 3.11+, Git, make, ripgrep, hashing utilities, Claude Code or
-Codex, Harbor, Docker and its reachable daemon, the vendored
-`harbor_runner.py` and its local Docker smoke mode, the project-level
-`task_implemention.toml` rubric, the mirrored skills, the skill wrappers, and
-the skill report directory and status file. It does not validate the task
-scaffold contract, install software, build images, authenticate services, or
-make network calls. Section 2b below lists the download and install command for
-each dependency it can report as missing.
-
-The check also reminds authors to measure built runtime and verifier images with
-`docker image inspect`; the 2 GB image policy cannot be established until the
-task images have actually been built.
-
-We need to run these tasks in a specific environment, Dockerfiles must make the target explicit:
-
-```dockerfile
-FROM --platform=linux/amd64 python:3.12-slim
-```
-
 ## 2b. Install or update required tools and libraries
 
 Use this section for the dependencies `setup.sh` cannot install for you (Docker
@@ -127,9 +106,7 @@ and an agent CLI), for a manual install on a locked-down workstation, or when
 the check reports something out of date. `check-setup.sh` itself is read-only:
 it reports missing tools but never installs packages or contacts the network.
 
-Everything below is installed on the authoring machine only. Task environments
-still have to run with `allow_internet = false`, so nothing here may become a
-runtime dependency of the task itself.
+Everything below is installed on the authoring machine only. 
 
 | Dependency | Needed for | Install |
 | --- | --- | --- |
@@ -142,6 +119,7 @@ runtime dependency of the task itself.
 | Workbench runner token | remote Harbor runs | copy `.env.example` to `.env` and paste your `WORKBENCH_RUNNER_TOKEN` |
 
 `setup.sh` covers every row except Docker, the agent CLI, and the token itself.
+
 The subsections below give the detail for each.
 
 ### Docker
