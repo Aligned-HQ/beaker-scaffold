@@ -214,19 +214,9 @@ fi
 
 runner_test_file="${REPO_ROOT}/scripts/test_harbor_runner.py"
 if [[ -f "$runner_test_file" ]] && runner_test_output="$(PYTHONDONTWRITEBYTECODE=1 python3 "$runner_test_file" 2>&1)"; then
-    pass_check "Vendored Modal runner isolation tests pass"
+    pass_check "Vendored runner isolation tests pass"
 else
-    fail_check "Vendored Modal runner isolation tests failed: ${runner_test_output:-$runner_test_file is missing}" "Run PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py and fix the reported runner errors."
-fi
-
-modal_sdk_version="$(python3 -c 'import modal; print(getattr(modal, "__version__", "unknown"))' 2>/dev/null || true)"
-modal_cli_path="$(command_path modal)"
-if [[ -n "$modal_sdk_version" ]]; then
-    pass_check "Modal Python SDK: python3 can import modal ($modal_sdk_version); used for targeted cleanup when the CLI is absent"
-elif [[ -n "$modal_cli_path" ]]; then
-    pass_check "Modal CLI cleanup fallback: $modal_cli_path"
-else
-    fail_check "Modal control plane: neither the Modal Python SDK nor CLI is available." "Install the Modal Python SDK or CLI and configure it so the runner can stop its owned app after a run or interrupt."
+    fail_check "Vendored runner isolation tests failed: ${runner_test_output:-$runner_test_file is missing}" "Run PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py and fix the reported runner errors."
 fi
 
 docker_path="$(command_path docker)"
