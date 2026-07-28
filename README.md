@@ -63,8 +63,8 @@ failure.
 Create a new task project from the scaffold and choose a concise task slug:
 
 ```bash
-git clone https://github.com/Aligned-HQ/beaker-scaffold.git <task-project>
-cd <task-project>
+git clone https://github.com/Aligned-HQ/beaker-scaffold.git aligned_beaker_task
+cd aligned_beaker_task
 ```
 
 Keep the task in its own checkout. The skill wrappers, Markdown reports, status
@@ -440,7 +440,7 @@ hand.
 
 ## 4. Run the task-fixer script
 
-Run `task-fixer` after the first complete edit of the task. The fixer should
+Run `task-fixer` after the first complete edit of the task. The fixer runs your agent (Cluade Code or Codex) inside a wrapper and should
 survey the entire task and correct only task-local reproducibility and
 reviewability issues:
 
@@ -466,10 +466,11 @@ Use the project wrapper so the run is recorded in its Markdown report and in
 ```bash
 ./scripts/run-task-fixer.sh task
 ```
+The agent will print out its work to the console but may look at times like its not doing work. It will print a pass/fail when it is complete.
 
 ## 5. Run the task-review script
 
-Run `task-review` after the fixer. It must read every criterion in the
+Run `task-review` after the fixer. Like the `task-fixer` it runs your agent (Cluade Code or Codex) inside a wrapper. It must read every criterion in the
 repository rubric and provide a PASS / FAIL / N/A scorecard with file-and-line
 evidence. Pay particular attention to:
 
@@ -547,7 +548,7 @@ After the Harbor campaign completes, review the archived trajectory:
 ./scripts/run-trajectory-review.sh trajectories
 ```
 
-The trajectory review distinguishes genuine scientific failures from structural
+The trajectory review runs your agent (Cluade Code or Codex) inside a wrapper and uses it to distinguish genuine scientific failures from structural
 task bugs, prompt/test mismatches, tolerance problems, missing keys, and other
 clerical issues. If this fails you must update the task, rerun the harbor_runner and return the trajectory review.
 
