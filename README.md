@@ -1,13 +1,8 @@
 # Beaker scientific-workflow scaffold
 
-This repository is a starter project for a reproducible scientific-computing task in the terminal-bench style. It is deliberately editable: the files under `task/` contain a placeholder content so the container and verifier wiring can be exercised, but the placeholder task is not a publishable benchmark until all the
-placeholder content is replaced with a real scientific task.
+This repository is a starter project for a reproducible scientific-computing task in the terminal-bench style. The files under `task/` contain a placeholder content so the container and verifier wiring can be exercised, all the placeholder content must be replaced with a real scientific task.
 
-The maximum runtime for a task is 60 minutes. Keep the task workflow and its
-configured timeouts within this limit.
-
-This file is the whole authoring guide: motivation, setup, how to write the
-task, and every step of the run/review/submit workflow.
+This file is the whole authoring guide, the same instructions are also available in this [Google Document](https://docs.google.com/document/d/1EOXHxE6kHObi7E-NY54DZwdSaDAAzHwqJ9In21nLtGE/edit?usp=sharing)
 
 ## Motivation and intended flow
 
