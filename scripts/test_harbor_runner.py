@@ -142,7 +142,9 @@ def check_snapshot_results_map_to_original_task() -> None:
 
 def check_successful_archive_uses_agent_names_and_oracle() -> None:
     with tempfile.TemporaryDirectory(prefix="beaker-trajectory-archive-test-") as raw:
-        root = Path(raw)
+        # Resolve first: archive_completed_task_runs() returns resolved paths, and on
+        # macOS the temp root is under the /var -> /private/var symlink.
+        root = Path(raw).resolve()
         original_task = root / "task"
         original_task.mkdir()
         (original_task / "instruction.md").write_text("task", encoding="utf-8")

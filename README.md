@@ -26,25 +26,50 @@ configured timeouts within this limit.
    This checks Python 3.11+, Git, Make, ripgrep, Codex or Claude Code, Harbor,
    Modal, Docker, the vendored runner, the rubric, and the mirrored skills.
 
-**2b.** If the check reports a missing or outdated dependency, install or update
-it with your approved package manager, then run the check again. For example,
-update the Modal Python SDK with:
+**2b.** Install anything the check reports as missing, then run the check again.
+`check-setup.sh` is deliberately read-only: it reports missing tools but never
+installs packages or contacts the network.
+
+| Dependency | Needed for | Install |
+| --- | --- | --- |
+| Docker Desktop or Docker Engine | building the runtime and verifier images, the local smoke test | <https://docs.docker.com/get-started/get-docker/> |
+| Harbor CLI (`harbor`) | validating the task and running the Oracle locally | `uv tool install harbor` |
+| Python 3.11+ | scaffold scripts and `tomllib` | `brew install python@3.12`, or your distro package |
+| `rich` Python package | runner panels, tables, and transfer progress | `python3 -m pip install -r requirements.txt` |
+| Git, Make, ripgrep | skill wrappers, reviews, repository search | `brew install git make ripgrep` or `sudo apt-get install -y git make ripgrep` |
+| Claude Code or Codex CLI | the task-fixer, task-review, and trajectory-review skills | `npm install -g @anthropic-ai/claude-code` or `npm install -g @openai/codex` |
+| Workbench runner token | remote Harbor runs | copy `.env.example` to `.env` and paste your `WORKBENCH_RUNNER_TOKEN` |
+
+**Docker.** Install Docker Desktop (macOS/Windows) or Docker Engine (Linux) and
+start the daemon before any build, smoke test, or Oracle run. Verify with
+`docker --version` and `docker info`. On Apple silicon, enable Docker Desktop →
+Settings → General → *Use Rosetta for x86/amd64 emulation*, because task
+Dockerfiles pin `FROM --platform=linux/amd64`.
+
+**Harbor.** Harbor is the harness that runs the task and its Oracle. Install it
+as an isolated tool with [uv](https://docs.astral.sh/uv/); Harbor itself
+requires Python 3.12 or newer, so an isolated install keeps it independent of
+the interpreter used by the scaffold scripts:
 
 ```bash
-python3 -m pip install --upgrade modal
+curl -LsSf https://astral.sh/uv/install.sh | sh   # skip if uv is already installed
+uv tool install harbor
+harbor --version                                   # 0.9.0 is known good
 ```
 
-Install or update Docker Desktop/Engine, Harbor, Codex or Claude Code, Git,
-Make, and ripgrep using the package source approved for your workstation. Start
-the Docker daemon before continuing. These downloads are for the authoring
-machine; task environments must still run without internet access.
+`pip install harbor` also works when the active interpreter is Python 3.12+.
+Upgrade later with `uv tool upgrade harbor`. Source and examples:
+<https://github.com/harbor-framework/harbor>.
 
-The runner uses Rich for terminal panels, tables, and transfer progress. Install
-its pinned host-side dependency with:
+**Modal is not required.** Task campaigns run remotely on the Workbench Harbor
+service, and local validation and Oracle runs use Docker plus the Harbor CLI.
+`check-setup.sh` still reports a missing Modal SDK/CLI as a failure; you only
+need `python3 -m pip install modal` (and `modal token new`) if you deliberately
+run `./harbor_runner.py task --no-remote --env modal` against your own Modal
+account.
 
-```bash
-python3 -m pip install -r requirements.txt
-```
+These downloads are for the authoring machine; task environments must still run
+without internet access.
 
 3. Edit `task/instruction.md`, `task/task.toml`, `task/environment/`,
    `task/solution/`, and `task/tests/`. Keep the prompt, artifacts, solver, and
