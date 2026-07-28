@@ -11,25 +11,56 @@ Read every criterion in the repo-root `task_implemention.toml`, evaluate each ag
 
 ## Client deployment gates
 
-Every reviewed task must satisfy the client's offline and image-size policy:
+Submitted tasks are validated by Google's sandboxed execution service, which
+ignores most `task.toml` parameters. Score these gates in addition to the rubric
+criteria; a task that violates one is not ready for upload even if its
+scientific verifier passes. Cite evidence for each, and mark a gate
+**UNVERIFIED** rather than assuming it passes when the evidence is unavailable.
 
-- `task.toml` must set `[environment].allow_internet = false`.
-- Runtime and verifier execution must not call live APIs, download files,
-  install packages, contact remote databases, or otherwise require a network.
-- The final runtime image and final separate verifier image must each be no
-  larger than **2 GB (2,000,000,000 bytes)**. Use
-  `docker image inspect --format '{{.Size}}' <image-tag>` when a built image is
-  available. Do not estimate success from the Dockerfile or compressed layer
-  sizes alone.
-- If a built image or size evidence is unavailable, report the client image-size
-  gate as **UNVERIFIED** and recommend `task-fixer`; do not assume it passes.
-- If the Harbor agent bootstrap requires an online CLI download, classify the
-  installed-agent path as infrastructure-blocked under this client policy.
-  Do not recommend changing `allow_internet` to `true`; the client must provide
-  an approved offline/preinstalled adapter.
+- **Network**: `[environment].allow_internet` must be `false` (the project
+  validator requires it) and `[environment].network_mode` must be
+  `"no-network"` (what the submission sandbox reads). `allow_internet = true` is
+  blocked and fails pre-validation immediately; it is deprecated upstream in
+  favour of `network_mode`. Runtime and
+  verifier execution must not call live APIs, download files, install packages,
+  or contact remote databases. Never recommend enabling internet; the client
+  must supply an approved offline or preinstalled adapter.
+- **Single container**: the sandbox runs one container and never builds
+  `tests/Dockerfile`. FAIL when a verifier dependency exists only in the
+  verifier image, or when hidden truth is produced by a builder stage in
+  `tests/Dockerfile` instead of being checked in under `tests/data/`.
+- **Fail → pass transition**: validation runs `test.sh` before the solution
+  (must fail) and again after it (must pass). FAIL a verifier that would pass on
+  an untouched environment — one that skips when outputs are missing, swallows
+  its own assertions, writes a default passing reward, or asserts nothing
+  substantive.
+- **Idempotent verifier**: `test.sh` may run repeatedly. FAIL when it creates
+  state it neither resets nor tolerates on a second run.
+- **Reward signal**: `test.sh` must write the reward on both branches to
+  `/logs/tests/reward.txt` or `/logs/verifier/reward.txt` before exiting.
+- **No runtime installs**: an install command in `test.sh` or `solve.sh` is
+  rejected by pre-validation. Dependencies belong in the image.
+- **No `/tmp` staging at build time**: the sandbox mounts a clean tmpfs over
+  `/tmp`, erasing anything the image left there. Wheelhouses and caches belong
+  under `/opt/` or `/app/`.
+- **Image**: single-architecture `linux/amd64`, pinned by SHA256 digest, and no
+  larger than **2 GB (2,000,000,000 bytes)**. Use `docker image inspect --format
+  '{{.Size}}' <image-tag>` on a built image; do not infer success from the
+  Dockerfile or compressed layer sizes. Manifest lists and `:latest` tags fail
+  the pull.
+- **Ignored parameters**: `verifier.timeout_sec` (a fixed 1-hour timeout
+  applies), `environment.docker_image`, `cpus`, `gpu*`, `tpu*`, `healthcheck*`,
+  `mcp_servers*`, `verifier.environment_mode`, and Dockerfile `ENTRYPOINT`/`CMD`
+  are all discarded. When scoring `resource_configuration`, judge whether the
+  workload fits the fixed sandbox budget (64 GB RAM, 4 CPUs, no GPU, one hour)
+  rather than whether the fields look tidy. Flag an `env` template without a
+  default (`${VAR}`) — it is rejected; `${VAR:-default}` is fine.
 
-These are deployment gates in addition to the rubric criteria. A task that
-violates them is not ready for upload even if its scientific verifier passes.
+The submission service also runs its own LLM validators — task clarity,
+resource availability, rubric clarity/discriminability/relevance/robustness, and
+a pass@k difficulty check. Anticipate them: an ambiguous instruction, a rubric
+that no longer matches the prompt, or a verifier calibrated too leniently or too
+strictly will be caught there even if the local scorecard passes.
 
 ## Docker access for deployment-gate evidence
 
@@ -130,16 +161,17 @@ Keep the table rows one line each where possible; spill into "Notes" only when n
 
 These are reminders, not overrides — the `guidance` text in `task_implemention.toml` is authoritative.
 
-- **verifiable / functional_verification**: check that `tests/test_outputs.py` actually executes the agent's output and asserts numerical / structural facts, not that it greps source files. If it uses LLM-as-a-judge, fail.
+- **verifiable / functional_verification**: check that `tests/test_outputs.py` actually executes the agent's output and asserts numerical / structural facts, not that it greps source files. If it uses LLM-as-a-judge, fail. Prefer a verifier that recomputes the expected result from a private fixture under `tests/data/`; FAIL a verifier that only compares against constants pasted into the test file. FAIL any test that grades prose — word counts, required keywords, headings, or tone — since a report can say the right words for the wrong reasons.
 - **well_specified / test_instruction_alignment / structured_data_schema**: cross-check every assertion in the verifier against a clause in `instruction.md`. Flag any test that pins a constant (threshold, NIFFT length, gain recipe, schema field) that the instruction leaves to the agent's judgment. Flag any instruction clause that has no test.
 - **solvable / solution_quality / reviewable**: read `solve.sh`, every script it invokes, and `solution/process.md`. The solution must derive the answer (not `echo` it); scripts > 20 lines should live in their own files, not heredocs. `process.md` must list the intended solving steps clearly enough for reviewers to understand the workflow.
 - **outcome_verified**: instruction should describe the end state, not enforce specific tools. "Use scipy" is fine if scipy is the only sane choice; "use emacs" is not.
 - **anti_cheat_robustness / task_security**: scan the solution and environment for hardcoded answers, files copied into the runtime image that contain expected outputs, or any obfuscated / network-exfil code.
-- **deterministic_reproducible**: check whether the task is hermetic enough to grade reproducibly, has `allow_internet = false`, and has no live-service dependency. Leave concrete vendoring/dependency repair steps to `task-fixer`.
+- **deterministic_reproducible**: check whether the task is hermetic enough to grade reproducibly, is air-gapped (`network_mode = "no-network"` or absent, never `allow_internet = true`), and has no live-service dependency. The reference solution must derive its result rather than store it, must seed anything stochastic, and must read paths from the six canonical variables — `WORKSPACE_DIR`, `DATA_DIR`, `OUTPUT_DIR`, `SOLUTION_DIR`, `TESTS_DIR`, `LOG_DIR` — instead of hardcoding them or inventing a per-artifact variable. Leave concrete vendoring/dependency repair steps to `task-fixer`.
+- **resource_configuration / expert_time_estimate**: the whole workflow, Oracle included, has to finish inside the fixed one-hour sandbox timeout; flag a solution whose runtime plausibly exceeds it. `expert_time_estimate_hours` describes the human expert, not the machine, and should be non-zero and plausible.
+- **Authored-in-the-author's-voice fields**: `instruction.md`, the task description, the three explanation fields, and the expert time estimate are hand-written by the author. Judge them on substance; do not offer to rewrite them, and treat an explanation that reads as generated boilerplate as evidence for the relevant explanation-quality criterion.
 - **essential_difficulty**: the failure modes the verifier flags should be scientific, not clerical (units, JSON key spelling, file path typos).
 - **difficulty_explanation_quality / solution_explanation_quality / verification_explanation_quality**: read the three `[metadata]` fields in `task.toml`. Empty strings, single sentences, or "this task is hard" → FAIL. Verification explanation must justify any inequality bounds / tolerances.
 - **category_and_tags / task_name / task_toml_schema**: validate `task.toml` metadata against the rubric and Harbor schema at a review level
-- **resource_configuration / expert_time_estimate**: timeouts and CPU/memory should match the workload; `expert_time_estimate_hours` should be non-zero and plausible.
 - **instruction_clarity**: the prompt should specify goals, inputs, constraints, and output contract without becoming a step-by-step protocol. Flag instructions that pre-digest the science into algorithmic steps or dictate tools/libraries the agent should choose.
 - **instruction_minimality**: check that `instruction.md` uses only Markdown that materially improves readability, avoids decorative structure and implementation checklists, does not spoon-feed the solution, and keeps solver process details in `solution/process.md`. Permit code formatting, necessary equations, and compact headings when they clarify the task.
 - **novel / agentic / scientifically_grounded / difficult / reviewable**: judgment calls — be honest. A textbook exercise dressed up as a benchmark is still a textbook exercise; a task that only requires translating English into Python/NumPy should fail these criteria even if it is numerically complex.

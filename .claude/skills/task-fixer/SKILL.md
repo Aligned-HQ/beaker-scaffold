@@ -35,24 +35,84 @@ entrypoint is allowed. Do not create placeholder solution or test
 implementations. If a required repair would need scientific or verifier content
 changed, report the blocker for the task author.
 
-## Client deployment constraints
+## Deployment constraints (Google Nexus sandbox)
 
-These constraints apply to the task images:
+Submitted tasks are validated by Google's sandboxed execution service, not by
+the open-source Harbor runtime. Most `task.toml` parameters are ignored there.
+Treat every constraint below as an Oracle-readiness gate, not as a reason to
+weaken the task contract.
 
-- `task.toml` must set `[environment].allow_internet = false`. Oracle execution
-  must not require APIs, downloads, package installation, or remote databases.
-- Build and inspect single-platform `linux/amd64` images. Do not rely on an OCI
-  multi-architecture manifest for the image submitted to the runner.
-- The final runtime image and, for `environment_mode = "separate"`, the final
-  verifier image must each be no larger than 2 GB (`2,000,000,000` bytes).
-- Vendor runtime inputs and approved offline dependencies in the task or use an
-  approved base image. Do not solve a missing dependency by enabling internet.
-- Do not modify Harbor, the runner, or an agent bootstrap to work around these
-  constraints. An agent-installation limitation is outside this Oracle-only
-  skill and must be reported separately.
+**Network.** The sandbox is air-gapped. Set both
+`[environment].allow_internet = false`, which `scripts/validate_scaffold.py`
+requires, and `[environment].network_mode = "no-network"`, which is what the
+submission sandbox actually reads. `allow_internet` is deprecated upstream:
+setting it to `true` implicitly requests `network_mode = "public"` and fails
+pre-validation immediately with a permanent error. Oracle and verifier execution
+must not require APIs, downloads, package installation, or remote databases.
 
-Treat a network dependency, unsupported architecture, or image over the size
-cap as an Oracle-readiness failure, not as a reason to weaken the task contract.
+**One container.** The sandbox runs a single container and ignores
+`[verifier].environment_mode`; it never builds `tests/Dockerfile`. Everything
+`tests/test.sh` imports or invokes must be installed in the runtime image, and
+nothing may depend on a builder stage in `tests/Dockerfile`. Docker Compose,
+multi-service topologies, and multi-step evaluation are unsupported.
+
+**Layout the sandbox expects.** The submitted archive is extracted with
+`environment/` → `/app/`, `tests/` → `/tests/`, and `solution/` → `/solution/`;
+`/app/verify` is symlinked to `/tests/`. `solution/solve.sh` runs with the
+working directory set to `/app` and must be executable, as must
+`tests/test.sh`. The extractor searches at most two levels deep, so keep
+nesting shallow. Because extraction is additive to the image, anything the task
+reads through `WORKSPACE_DIR`/`DATA_DIR` must already be baked into the image —
+do not assume the archive provides it.
+
+**Fail → pass transition.** Validation runs `tests/test.sh` on the unmodified
+environment, where it must fail, then runs `solution/solve.sh`, after which it
+must pass. A verifier that passes before the solution is applied fails
+validation as trivially solvable. A verifier that cannot fail — because it
+skips when outputs are missing, defaults to a passing reward, or asserts
+nothing — is the same defect.
+
+**Idempotent verifier.** `test.sh` may be executed several times. It must reset
+or tolerate any state it creates so repeated runs give the same verdict.
+
+**Reward signal.** `test.sh` must write the reward before it exits.
+`/logs/tests/reward.txt` and `/logs/verifier/reward.txt` are symlinked, so
+either path works. Priority is `reward.txt` (contains `1`), then `reward.json`
+(field `reward >= 1.0`), then the exit code. Prefer `reward.txt`.
+
+**No runtime installs.** Pre-validation scans the archive for install commands
+and rejects the task before it runs if `test.sh` or `solve.sh` contain
+`pip install`, `apt-get install`, `curl ... | sh`, or similar. Every dependency
+must be baked into the image at build time.
+
+**Never stage anything under `/tmp` at build time.** The sandbox overlays
+`/tmp` with a clean, empty tmpfs at startup, erasing whatever the image put
+there. Put wheelhouses, caches, and vendored dependencies under `/opt/` or
+`/app/` instead. This is one of the most common causes of "tests failed after
+applying golden solution".
+
+**Image.** Build and inspect single-platform `linux/amd64` images. Manifest
+lists and multi-architecture indexes fail the pull with `MANIFEST_UNKNOWN`; the
+submitted image must be pinned by SHA256 digest, not a tag such as `:latest`.
+Keep the final image no larger than 2 GB (`2,000,000,000` bytes). Custom
+`ENTRYPOINT`/`CMD` directives are ignored by the validation pipeline.
+
+**Ignored `task.toml` parameters.** Do not spend repairs on, or claim
+correctness from, values the sandbox discards: `verifier.timeout_sec` (a fixed
+1-hour system timeout applies), `environment.docker_image` (the image comes
+from the API's `containerImageUri`), `environment.cpus`, `environment.gpu*`,
+`environment.tpu*`, `environment.healthcheck*`, `environment.mcp_servers*`, and
+`verifier.environment_mode`. `verifier.env` and `environment.env` are honored,
+but a template without a default such as `${VAR_NAME}` is rejected; use
+`${VAR_NAME:-default}`.
+
+**Archive hygiene.** macOS resource-fork files (`._*`) in the archive cause a
+`UnicodeDecodeError` during ingestion. Keep them, `.DS_Store`, caches, and
+credentials out of the task.
+
+Do not modify Harbor, the runner, or an agent bootstrap to work around these
+constraints. An agent-installation limitation is outside this Oracle-only skill
+and must be reported separately.
 
 ## Docker access and offline dependency bundles
 
@@ -180,17 +240,28 @@ the exact missing path and remedy instead of inventing it.
 
    Edit `task.toml` only as needed to make it valid and Oracle-compatible:
 
-   - set `allow_internet = false` and preserve the task's scientific contract;
-   - when `tests/test.sh` and verifier modules exist, prefer
-     `environment_mode = "separate"` and complete `tests/Dockerfile`; do not
-     select shared mode merely to avoid repairing a missing verifier image;
-   - preserve an explicitly required shared mode only when the task contract
-     and project validator support it;
+   - set `[environment].allow_internet = false` and
+     `[environment].network_mode = "no-network"`; never leave `allow_internet =
+     true`. Preserve the task's scientific contract;
+   - do not rely on `environment_mode`: the submission sandbox ignores it and
+     runs one container, so the verifier's dependencies belong in the runtime
+     image. `tests/Dockerfile` may still exist for local two-image runs, but it
+     is never built at submission time and must not be the only place a
+     verifier dependency is installed;
    - declare the files the existing solution produces and the verifier consumes
      in Harbor's supported artifact form, normally
      `artifacts = ["/workspace/output/<file>"]`;
+   - keep any `env` value self-contained: `${VAR:-default}` is resolved at
+     compile time, while a bare `${VAR}` is rejected;
    - remove host-specific paths such as `/Users/...` and `/Volumes/...` from
      metadata; use task/container paths instead;
+   - leave the timeouts consistent with the fixed 1-hour system timeout, and do
+     not invent CPU/GPU/healthcheck settings to satisfy a checklist — the
+     sandbox fixes resources and ignores those fields;
+   - never author the scientific metadata. `difficulty_explanation`,
+     `solution_explanation`, `verification_explanation`, the task description,
+     and the expert time estimate are the author's own words. Report a missing
+     or weak one as a blocker instead of writing it;
    - retain intentional task values and report any value that cannot be inferred
      from the current task rather than inventing a scientific requirement.
 
@@ -214,6 +285,16 @@ the exact missing path and remedy instead of inventing it.
    - create required directories and give the configured runtime user access to
      them in the final image;
    - make every `FROM` line explicit: `FROM --platform=linux/amd64 ...`;
+   - install the verifier's dependencies in the runtime image too. The
+     submission sandbox runs the agent and the verifier in one container, so a
+     package that exists only in the verifier image passes locally and then
+     fails on submission with `No module named pytest`;
+   - never leave wheelhouses, caches, or vendored dependencies under `/tmp`.
+     The sandbox replaces `/tmp` with an empty tmpfs at startup, so anything
+     staged there at build time is gone before the task runs. Use `/opt/` or
+     `/app/`;
+   - do not depend on `ENTRYPOINT` or `CMD`; the validation pipeline controls
+     container execution and ignores them;
    - classify every package install as Oracle/runtime, verifier, or
      agent-bootstrap-only. Remove bootstrap-only `apt-get` blocks when they are
      not needed by the Oracle; do not retain online `curl`, apt, or package
@@ -335,6 +416,29 @@ the exact missing path and remedy instead of inventing it.
    If Docker or an offline dependency is unavailable, report the check as
    unverified rather than enabling internet or claiming success.
 
+7. **Audit the fail → pass transition statically.**
+
+   Submission validation requires `tests/test.sh` to fail on the unmodified
+   environment and to pass after `solution/solve.sh` runs. Running either script
+   is out of scope for this skill, so check the conditions that make the
+   transition possible by reading them:
+
+   - the verifier must fail when the outputs do not exist yet. Flag a verifier
+     that skips on missing files, catches its own assertion errors, writes a
+     default passing reward, or asserts nothing substantive — that is a vacuous
+     pass and fails validation as trivially solvable;
+   - `test.sh` must write the reward on both branches, to
+     `/logs/tests/reward.txt` or `/logs/verifier/reward.txt`, before exiting;
+   - `test.sh` must be safe to run more than once: any file, database, or
+     service state it creates has to be reset or handled on re-entry;
+   - neither `test.sh` nor `solve.sh` may contain an install command;
+   - `solve.sh` must tolerate `/app` as its working directory and must be
+     executable, as must `test.sh`.
+
+   Report any of these as a blocker rather than editing the verifier or the
+   solution. The executable proof belongs to the project smoke test, which runs
+   the solution and the verifier in one offline container.
+
 ## Failure handling
 
 Return `FAIL` only after attempting the in-scope repairs. Fail when a required
@@ -380,6 +484,11 @@ files changed, checks run, and remaining blockers. When run through
   skills, caches, or unrelated files.
 - Do not leave online apt, pip, curl, or package bootstrap commands when an
   approved offline base or local bundle can replace them; never enable internet
-  access to make a build pass.
+  access to make a build pass. Never set `allow_internet = true` or
+  `network_mode = "public"`; both fail submission pre-validation outright.
+- Never stage build artifacts under `/tmp`, and never leave a verifier
+  dependency installed only in `tests/Dockerfile`.
+- Never write the author's scientific metadata: the task description, the three
+  explanation fields, and the expert time estimate stay in the author's voice.
 - Clean up every temporary container and image created during validation.
 - Cite every changed path and every unverified check in the final handoff.

@@ -20,6 +20,13 @@ tooling failures before the agent has a meaningful chance to inspect or solve
 the task. Report these separately as ignored trials; do not count them as task
 failures.
 
+Difficulty is not a defect. The submission service checks pass@k, but a task
+whose pass rate falls outside its expected band is not thereby invalid — the
+project's own gate is an average agent pass rate strictly below 50%, and agents
+failing for genuine scientific reasons is the intended outcome. Judge whether
+each failure was scientific, structural, or platform noise; do not convert a low
+pass rate into a task bug on its own.
+
 ## Inputs
 
 - A set of completed trajectories.
@@ -65,6 +72,14 @@ failures.
      missing dependencies, wrong user/permissions, missing output artifacts,
      reward-file problems, no trial result, task not loaded into `lock.json`,
      verifier image missing files, or agent could not run the provided tools.
+     Also structural, and each fatal at submission: a verifier dependency
+     installed only in the verifier image, since the submission sandbox runs one
+     container; a dependency or cache staged under `/tmp` at build time, which
+     the sandbox wipes with a fresh tmpfs; an install command reached at runtime
+     in an air-gapped container; a verifier that passes without the agent having
+     produced anything, which fails validation as trivially solvable; and a
+     verifier whose second run disagrees with its first because it left state
+     behind.
    - **Ignored agent/platform error**: an error unrelated to the task contract
      or scientific work, such as Modal/Harbor startup problems, agent CLI
      boot failures, missing provider credentials, transient API/provider
