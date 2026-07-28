@@ -12,7 +12,7 @@ scientific workflows in the drug discovery pipeline. A good task captures work t
 For a stage-by-stage catalog of representative work, see
 [Drug discovery pipeline — representative tasks & tools](drug_discovery_pipeline.md).
 
-There are many files and scripts in this repository meant to help you create your task but you only need to worry about four files:
+There are many files and scripts in this repository meant to help you create your task but you only need to worry about five files:
 
 1. `solve.py` is a reference solution showing how an expert would solve the task
 2. `instruction.md` describes the scientific question, available inputs,
@@ -20,6 +20,7 @@ There are many files and scripts in this repository meant to help you create you
 3. `test_outputs.py` checks independent, substantive properties of
    the submitted outputs from your reference solution and any solution offered by an agent when the agent harness is run.
 4. `process.md` — shows how an expert would solve the task step by step.
+5. `task.toml` - this is metadata about the task that you'll need to edit.
 
 Before asking models to solve the task, we run the reference workflow (aka Oracle) against the tests to confirm that the task and its evaluation are working as intended. We then give the same instruction and public task environment to three
 different agents. Each agent must create its own solution without seeing the
@@ -69,39 +70,70 @@ cd <task-project>
 Keep the task in its own checkout. The skill wrappers, Markdown reports, status
 file, Harbor evidence, and trajectory archive are all part of the handoff.
 
-## 2. Set up and check the local authoring toolchain
+## 2. Set up the local authoring toolchain
 
-Before editing a task, build the authoring environment:
+### 2.1 Install the three things the setup script cannot
+
+Install the following:
+
+1. **An agent CLI** — Claude Code or Codex. The task-fixer, task-review, and
+   trajectory-review steps drive one of them. Either is fine; installing both
+   lets you switch with `--runner`.
+
+   ```bash
+   npm install -g @anthropic-ai/claude-code   # or: curl -fsSL https://claude.ai/install.sh | bash
+   npm install -g @openai/codex               # or: brew install codex
+   ```
+
+   Run it once interactively to sign in. If you already have one installed, make
+   sure it is current — `claude update` / `codex update` — since the skill
+   wrappers need a recent CLI and will tell you the exact version to upgrade to
+   if yours is too old.
+
+2. **Docker** — Docker Desktop on macOS or Windows, Docker Engine on Linux:
+   <https://docs.docker.com/get-started/get-docker/>. Start it and leave it
+   running; the smoke test and the local Oracle run need it.
+
+3. **A Workbench runner token** — This is token that will authenticate the scripts that automatically run the agents. Log in to <https://workbench.alignedhq.ai>,
+   open your profile → Settings, and create an access token. Keep it to hand for
+   the next step. Tokens are per-person: never share or commit one.
+
+### 2.2 Run the setup script
 
 ```bash
 ./scripts/setup.sh          # add --yes to accept the documented installs
 source .venv/bin/activate   # in every new shell
 ```
 
-`setup.sh` selects a Python 3.11+ interpreter (preferring 3.12+, which Harbor
-needs), creates `.venv`, installs `requirements.txt` into it, installs the
-Harbor CLI, copies `.env.example` to `.env`, prints a `STEPS LEFT FOR YOU` list
-for anything it cannot install, and finishes by running `check-setup.sh`. It is
-safe to rerun: an existing environment is reused. Docker, Claude Code, and Codex
-are never installed automatically.
+`setup.sh` does the rest: it selects a Python 3.11+ interpreter (preferring
+3.12+, which Harbor needs), creates `.venv`, installs `requirements.txt` into
+it, installs the Harbor CLI, and copies `.env.example` to `.env`. Paste your
+token into that file as `WORKBENCH_RUNNER_TOKEN=<token>`.
+
+Anything it could not do for you is printed at the end as a `STEPS LEFT FOR YOU`
+list. It is safe to rerun, and it reuses an existing environment.
 
 Activation matters: `harbor_runner.py` runs under the `python3` on your `PATH`,
 so `check-setup.sh` warns when `.venv` exists but is not active.
 
-To verify an environment without changing it, run the check on its own:
+### 2.3 Verify
+
+`setup.sh` finishes by running the check. To verify an environment without
+changing it, run the check on its own at any time:
 
 ```bash
 ./scripts/check-setup.sh
 ```
 
-## 2b. Install or update required tools and libraries
+## 2b. Supplemental: installing everything by hand
 
-Use this section for the dependencies `setup.sh` cannot install for you (Docker
-and an agent CLI), for a manual install on a locked-down workstation, or when
-the check reports something out of date. `check-setup.sh` itself is read-only:
-it reports missing tools but never installs packages or contacts the network.
+Most authors can skip this section. Use it when `setup.sh` cannot run on your
+workstation, when you would rather install into an environment you manage
+yourself, or when the check reports something out of date and you want the
+specific command. `check-setup.sh` itself is read-only: it reports missing tools
+but never installs packages or contacts the network.
 
-Everything below is installed on the authoring machine only. 
+Everything below is installed on the authoring machine only.
 
 | Dependency | Needed for | Install |
 | --- | --- | --- |
@@ -113,9 +145,8 @@ Everything below is installed on the authoring machine only.
 | Claude Code or Codex CLI | the task-fixer, task-review, and trajectory-review skills | `npm install -g @anthropic-ai/claude-code` or `npm install -g @openai/codex` |
 | Workbench runner token | remote Harbor runs | copy `.env.example` to `.env` and paste your `WORKBENCH_RUNNER_TOKEN` |
 
-`setup.sh` covers every row except Docker, the agent CLI, and the token itself.
-
-The subsections below give the detail for each.
+`setup.sh` covers every row except Docker, the agent CLI, and the token
+itself, which step 2.1 covers. The subsections below give the detail for each.
 
 ### Docker
 
