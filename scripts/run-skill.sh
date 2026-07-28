@@ -325,12 +325,26 @@ STATUS_OUTPUT_TMP="$(mktemp)" || {
     rm -f "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP"
     die "could not create temporary status output file"
 }
+AGENT_EXIT_TMP="$(mktemp)" || {
+    rm -f "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" "$STATUS_OUTPUT_TMP"
+    die "could not create temporary agent status file"
+}
+PROGRESS_DONE_TMP="$(mktemp)" || {
+    rm -f "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" "$STATUS_OUTPUT_TMP" "$AGENT_EXIT_TMP"
+    die "could not create temporary progress status file"
+}
+rm -f "$PROGRESS_DONE_TMP" || {
+    rm -f "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" "$STATUS_OUTPUT_TMP" "$AGENT_EXIT_TMP"
+    die "could not initialize temporary progress status file"
+}
 
 RUN_ID="$(date -u '+%Y%m%dT%H%M%SZ')-${SKILL}-$$"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 RUN_STATUS="FAILED"
 EXIT_CODE=1
 FINALIZED=0
+PROGRESS_PID=""
+AGENT_PIPELINE_PID=""
 
 write_status_file "Run" "$STARTED_AT" "$TARGET_REL" || die "could not update $STATUS_FILE"
 
@@ -512,6 +526,14 @@ finalize() {
         return
     fi
     FINALIZED=1
+    if [[ -n "$PROGRESS_DONE_TMP" ]]; then
+        : > "$PROGRESS_DONE_TMP" 2>/dev/null || true
+    fi
+    if [[ -n "$PROGRESS_PID" ]]; then
+        kill "$PROGRESS_PID" 2>/dev/null || true
+        wait "$PROGRESS_PID" 2>/dev/null || true
+        printf '\r\033[2K' >&2
+    fi
     ended_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     if ! prepare_report_outputs "$OUTPUT_TMP"; then
         cp "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" || true
@@ -528,6 +550,7 @@ finalize() {
     fi
     rm -f "$OUTPUT_TMP"
     rm -f "$FINAL_OUTPUT_TMP" "$STATUS_OUTPUT_TMP"
+    rm -f "$AGENT_EXIT_TMP" "$PROGRESS_DONE_TMP"
     printf '\nReport: %s\n' "$REPORT_FILE" >&2
     printf 'Status: %s\n' "$result_status" >&2
 }
@@ -569,6 +592,60 @@ Markdown output and updates those files.
 EOF
 )
 
+progress_indicator() {
+    local done_file="$1"
+    local frame_index=0
+    local elapsed=0
+    local frames='|/-\\'
+
+    while [[ ! -e "$done_file" ]]; do
+        if [[ -t 2 ]]; then
+            printf '\r\033[2K[%s] Agent working... (%ss)' \
+                "${frames:$frame_index:1}" "$elapsed" >&2
+            frame_index=$(( (frame_index + 1) % 4 ))
+        elif (( elapsed == 0 || elapsed % 10 == 0 )); then
+            printf 'Agent still working... (%ss elapsed)\n' "$elapsed" >&2
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+
+    if [[ -t 2 ]]; then
+        printf '\r\033[2K' >&2
+    else
+        printf 'Agent finished after %ss.\n' "$elapsed" >&2
+    fi
+}
+
+invoke_runner() {
+    if [[ "$RUNNER" = codex ]]; then
+        "$RUNNER_BIN" \
+            --ask-for-approval never \
+            exec \
+            -C "$REPO_ROOT" \
+            --sandbox "$CODEX_SANDBOX" \
+            --skip-git-repo-check \
+            "$PROMPT"
+    else
+        (
+            cd -- "$REPO_ROOT" || exit 1
+            CLAUDE_ARGS=(
+                --print
+                --no-session-persistence
+                --permission-mode "$CLAUDE_PERMISSION_MODE"
+                --add-dir "$REPO_ROOT"
+            )
+            if ((CLAUDE_ALLOW_DANGEROUS)); then
+                CLAUDE_ARGS+=(--allow-dangerously-skip-permissions)
+            fi
+            # --add-dir is variadic, so the prompt has to be separated from the
+            # option list with --; otherwise it is parsed as another directory and
+            # claude exits with "Input must be provided ... when using --print".
+            "$RUNNER_BIN" "${CLAUDE_ARGS[@]}" -- "$PROMPT"
+        )
+    fi
+}
+
 if ((DRY_RUN)); then
     printf 'DRY RUN: would invoke %s for %s on %s\n' "$RUNNER" "$SKILL" "$TARGET_ABS" | tee "$OUTPUT_TMP"
     RUN_STATUS=DRY_RUN
@@ -576,34 +653,20 @@ if ((DRY_RUN)); then
     exit 0
 fi
 
-if [[ "$RUNNER" = codex ]]; then
-    "$RUNNER_BIN" \
-        --ask-for-approval never \
-        exec \
-        -C "$REPO_ROOT" \
-        --sandbox "$CODEX_SANDBOX" \
-        --skip-git-repo-check \
-        "$PROMPT" 2>&1 | tee "$OUTPUT_TMP"
-    EXIT_CODE=${PIPESTATUS[0]}
-else
-    (
-        cd -- "$REPO_ROOT" || exit 1
-        CLAUDE_ARGS=(
-            --print
-            --no-session-persistence
-            --permission-mode "$CLAUDE_PERMISSION_MODE"
-            --add-dir "$REPO_ROOT"
-        )
-        if ((CLAUDE_ALLOW_DANGEROUS)); then
-            CLAUDE_ARGS+=(--allow-dangerously-skip-permissions)
-        fi
-        # --add-dir is variadic, so the prompt has to be separated from the
-        # option list with --; otherwise it is parsed as another directory and
-        # claude exits with "Input must be provided ... when using --print".
-        "$RUNNER_BIN" "${CLAUDE_ARGS[@]}" -- "$PROMPT"
-    ) 2>&1 | tee "$OUTPUT_TMP"
-    EXIT_CODE=${PIPESTATUS[0]}
-fi
+(
+    set +e
+    invoke_runner 2>&1 | tee "$OUTPUT_TMP"
+    printf '%s\n' "${PIPESTATUS[0]}" > "$AGENT_EXIT_TMP"
+) &
+AGENT_PIPELINE_PID=$!
+progress_indicator "$PROGRESS_DONE_TMP" &
+PROGRESS_PID=$!
+
+wait "$AGENT_PIPELINE_PID" || true
+: > "$PROGRESS_DONE_TMP"
+wait "$PROGRESS_PID" || true
+EXIT_CODE="$(sed -n '1p' "$AGENT_EXIT_TMP")"
+[[ "$EXIT_CODE" =~ ^[0-9]+$ ]] || EXIT_CODE=1
 
 if ! prepare_report_outputs "$OUTPUT_TMP"; then
     cp "$OUTPUT_TMP" "$FINAL_OUTPUT_TMP" || true
