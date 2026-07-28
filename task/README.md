@@ -72,4 +72,4 @@ For a Harbor task, use the task directory rather than the project wrapper:
 After a successful multi-agent run, the vendored runner writes its Oracle,
 agent trajectories, and combined summary directly under the project-level
 `trajectories/` folder. Run the trajectory review described in the root
-`authoring-guide.md` against that folder.
+`README.md` against that folder.
