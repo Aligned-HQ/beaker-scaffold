@@ -185,10 +185,10 @@ Never commit, share, or reuse another author's `.env` or token.
 
 Task campaigns run remotely against the Workbench Harbor service, and local
 validation and Oracle runs need only Docker and the Harbor CLI, so you do not
-need a Modal account or SDK for the documented workflow. `check-setup.sh` still
-reports a missing Modal SDK/CLI as a failure; ignore that single failure unless
-you deliberately run `./harbor_runner.py task --no-remote --env modal` against
-your own Modal account, in which case install and configure it with:
+need a Modal account or SDK for the documented workflow. `check-setup.sh` does
+not check for it. Install and configure it yourself only if you deliberately run
+`./harbor_runner.py task --no-remote --env modal` against your own Modal
+account:
 
 ```bash
 python3 -m pip install --upgrade modal

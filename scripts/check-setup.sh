@@ -219,16 +219,6 @@ else
     fail_check "Vendored Modal runner isolation tests failed: ${runner_test_output:-$runner_test_file is missing}" "Run PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_harbor_runner.py and fix the reported runner errors."
 fi
 
-modal_sdk_version="$(python3 -c 'import modal; print(getattr(modal, "__version__", "unknown"))' 2>/dev/null || true)"
-modal_cli_path="$(command_path modal)"
-if [[ -n "$modal_sdk_version" ]]; then
-    pass_check "Modal Python SDK: python3 can import modal ($modal_sdk_version); used for targeted cleanup when the CLI is absent"
-elif [[ -n "$modal_cli_path" ]]; then
-    pass_check "Modal CLI cleanup fallback: $modal_cli_path"
-else
-    fail_check "Modal control plane: neither the Modal Python SDK nor CLI is available." "Install the Modal Python SDK or CLI and configure it so the runner can stop its owned app after a run or interrupt."
-fi
-
 docker_path="$(command_path docker)"
 if [[ -n "$docker_path" ]]; then
     if docker_version="$(docker --version 2>&1 | head -n 1)"; then
@@ -312,6 +302,7 @@ else
     fail_check "Skill reports directory or skill-status.md is missing or not writable." "Restore writable skill-reports/ and skill-status.md so skill wrappers can save Markdown results and status updates."
 fi
 
+info_check "Modal is not checked: task campaigns run remotely on Workbench, and local validation and Oracle runs need only Docker and the Harbor CLI. Install the Modal SDK or CLI yourself only for a deliberate ./harbor_runner.py --no-remote --env modal run."
 info_check "Client policy: task environments must set allow_internet = false."
 info_check "Client policy: measure each built runtime/verifier image with docker image inspect and keep it <= 2,000,000,000 bytes."
 info_check "This check does not build images, authenticate agent CLIs, or contact network services."

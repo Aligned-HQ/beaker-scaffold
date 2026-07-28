@@ -24,7 +24,7 @@ configured timeouts within this limit.
    ```
 
    This checks Python 3.11+, Git, Make, ripgrep, Codex or Claude Code, Harbor,
-   Modal, Docker, the vendored runner, the rubric, and the mirrored skills.
+   Docker, the vendored runner, the rubric, and the mirrored skills.
 
 **2b.** Install anything the check reports as missing, then run the check again.
 `check-setup.sh` is deliberately read-only: it reports missing tools but never
@@ -61,11 +61,11 @@ harbor --version                                   # 0.9.0 is known good
 Upgrade later with `uv tool upgrade harbor`. Source and examples:
 <https://github.com/harbor-framework/harbor>.
 
-**Modal is not required.** Task campaigns run remotely on the Workbench Harbor
-service, and local validation and Oracle runs use Docker plus the Harbor CLI.
-`check-setup.sh` still reports a missing Modal SDK/CLI as a failure; you only
-need `python3 -m pip install modal` (and `modal token new`) if you deliberately
-run `./harbor_runner.py task --no-remote --env modal` against your own Modal
+**Modal is not required and is not checked.** Task campaigns run remotely on the
+Workbench Harbor service, and local validation and Oracle runs use Docker plus
+the Harbor CLI. You only need `python3 -m pip install modal` (and
+`modal token new`) if you deliberately run
+`./harbor_runner.py task --no-remote --env modal` against your own Modal
 account.
 
 These downloads are for the authoring machine; task environments must still run
