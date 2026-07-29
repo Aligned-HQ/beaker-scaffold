@@ -42,13 +42,11 @@ the open-source Harbor runtime. Most `task.toml` parameters are ignored there.
 Treat every constraint below as an Oracle-readiness gate, not as a reason to
 weaken the task contract.
 
-**Network.** The sandbox is air-gapped. Set both
-`[environment].allow_internet = false`, which `scripts/validate_scaffold.py`
-requires, and `[environment].network_mode = "no-network"`, which is what the
-submission sandbox actually reads. `allow_internet` is deprecated upstream:
-setting it to `true` implicitly requests `network_mode = "public"` and fails
-pre-validation immediately with a permanent error. Oracle and verifier execution
-must not require APIs, downloads, package installation, or remote databases.
+**Network.** The sandbox is air-gapped. Set
+`[environment].network_mode = "no-network"`, which is what the submission
+sandbox reads. Never use `network_mode = "public"` for a submitted task.
+Oracle and verifier execution must not require APIs, downloads, package
+installation, or remote databases.
 
 **One container.** The sandbox runs a single container and ignores
 `[verifier].environment_mode`; it never builds `tests/Dockerfile`. Everything
@@ -240,9 +238,8 @@ the exact missing path and remedy instead of inventing it.
 
    Edit `task.toml` only as needed to make it valid and Oracle-compatible:
 
-   - set `[environment].allow_internet = false` and
-     `[environment].network_mode = "no-network"`; never leave `allow_internet =
-     true`. Preserve the task's scientific contract;
+   - set `[environment].network_mode = "no-network"`; never set
+     `network_mode = "public"`. Preserve the task's scientific contract;
    - do not rely on `environment_mode`: the submission sandbox ignores it and
      runs one container, so the verifier's dependencies belong in the runtime
      image. `tests/Dockerfile` may still exist for local two-image runs, but it
@@ -484,8 +481,8 @@ files changed, checks run, and remaining blockers. When run through
   skills, caches, or unrelated files.
 - Do not leave online apt, pip, curl, or package bootstrap commands when an
   approved offline base or local bundle can replace them; never enable internet
-  access to make a build pass. Never set `allow_internet = true` or
-  `network_mode = "public"`; both fail submission pre-validation outright.
+  access or set `network_mode = "public"` to make a build pass; that fails
+  submission pre-validation outright.
 - Never stage build artifacts under `/tmp`, and never leave a verifier
   dependency installed only in `tests/Dockerfile`.
 - Never write the author's scientific metadata: the task description, the three

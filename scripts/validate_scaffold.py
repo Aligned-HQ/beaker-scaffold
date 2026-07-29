@@ -95,7 +95,6 @@ ALLOWED_TABLE_KEYS = {
         "storage_mb",
         "gpus",
         "gpu_types",
-        "allow_internet",
         "network_mode",
         "env",
         "skills_dir",
@@ -231,12 +230,8 @@ class Checker:
                 valid_resource = False
             if not valid_resource:
                 self.error(f"[environment].{key} must be positive")
-        if not isinstance(environment, dict) or environment.get("allow_internet") is not False:
-            self.error("client policy requires [environment].allow_internet = false")
         network_mode = environment.get("network_mode") if isinstance(environment, dict) else None
-        if network_mode is None:
-            self.warn('[environment].network_mode = "no-network" is not set')
-        elif network_mode != "no-network":
+        if network_mode != "no-network":
             self.error(
                 f'[environment].network_mode must be "no-network", found "{network_mode}"'
             )

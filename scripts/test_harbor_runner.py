@@ -391,7 +391,9 @@ def check_remote_archive_extracts_evidence_without_task_files() -> None:
         task_root = source / "example-task"
         trajectories = task_root / "trajectories" / "codex" / "trial-1"
         trajectories.mkdir(parents=True)
-        (task_root / "task.toml").write_text("[environment]\nallow_internet = false\n", encoding="utf-8")
+        (task_root / "task.toml").write_text(
+            '[environment]\nnetwork_mode = "no-network"\n', encoding="utf-8"
+        )
         (task_root / "instruction.md").write_text("private task prompt\n", encoding="utf-8")
         (task_root / "solution").mkdir()
         (task_root / "solution" / "solve.py").write_text("private solution\n", encoding="utf-8")
@@ -764,18 +766,18 @@ def check_network_split_snapshots() -> None:
                 jobs_dir,
                 "snapshot-test",
                 snapshot_label="oracle-task-snapshot",
-                allow_internet=False,
+                network_mode="no-network",
             )
             agent = harbor_runner.snapshot_task_root(
                 oracle,
                 jobs_dir,
                 "snapshot-test",
                 snapshot_label="agent-task-snapshot",
-                allow_internet=True,
+                network_mode="public",
             )
             assert oracle != agent
-            assert harbor_runner.load_toml(oracle / "task.toml")["environment"]["allow_internet"] is False
-            assert harbor_runner.load_toml(agent / "task.toml")["environment"]["allow_internet"] is True
+            assert harbor_runner.load_toml(oracle / "task.toml")["environment"]["network_mode"] == "no-network"
+            assert harbor_runner.load_toml(agent / "task.toml")["environment"]["network_mode"] == "public"
     finally:
         harbor_runner.time.sleep = original_sleep
 
@@ -884,7 +886,7 @@ def check_remote_policy_wiring() -> None:
         payload,
     )
     assert execution["execution_policy_id"] == "scientific-offline-v1"
-    assert "allow_internet" not in execution
+    assert "network_mode" not in execution
     assert execution["agents"] == payload
     args.repeats = 3
     try:

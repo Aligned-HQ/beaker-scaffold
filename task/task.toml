@@ -39,8 +39,5 @@ cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 gpus = 0
-# The sandbox is air-gapped. allow_internet is deprecated in favour of
-# network_mode, and setting it true implies network_mode = "public", which fails
-# pre-validation immediately. Vendor every dependency into the image instead.
-allow_internet = false
+# The sandbox is air-gapped. Vendor every dependency into the image instead.
 network_mode = "no-network"

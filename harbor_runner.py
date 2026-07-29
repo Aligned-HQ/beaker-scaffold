@@ -13,9 +13,9 @@ Workbench remote mode is the default execution path; use `--no-remote` for a
 local Modal run. Preflight requires explicit
 `FROM --platform=linux/amd64` declarations in task Dockerfiles and rejects
 prebuilt image manifests that are not a single Linux/amd64 image. The source
-task must declare `[environment].allow_internet = false`; normal runs create
-an offline Oracle snapshot and a separate agent snapshot with
-`allow_internet = true`.
+task must declare `[environment].network_mode = "no-network"`; normal runs
+create an offline Oracle snapshot and a separate agent snapshot with
+`network_mode = "public"`.
 
 Examples:
     # Build the task image and run the reference solution/verifier locally:
@@ -457,8 +457,13 @@ def resolve_single_task(path: Path) -> Path:
     return path
 
 
-def set_snapshot_allow_internet(task_root: Path, allow_internet: bool) -> None:
+def set_snapshot_network_mode(task_root: Path, network_mode: str) -> None:
     """Set the generated snapshot's network policy without touching the source task."""
+    if network_mode not in {"no-network", "public"}:
+        raise SystemExit(
+            f"error: unsupported snapshot network_mode {network_mode!r}; "
+            'expected "no-network" or "public"'
+        )
     config_path = task_root / "task.toml"
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
     in_environment = False
@@ -470,27 +475,27 @@ def set_snapshot_allow_internet(task_root: Path, allow_internet: bool) -> None:
             continue
         if not in_environment:
             continue
-        if re.match(r"^\s*allow_internet\s*=", line):
+        if re.match(r"^\s*network_mode\s*=", line):
             newline = "\n" if line.endswith("\n") else ""
             comment = ""
             content = line.rstrip("\r\n")
             if "#" in content:
                 comment_text = content.split("#", 1)[1].strip()
                 comment = f"  # {comment_text}" if comment_text else "  #"
-            lines[index] = f"allow_internet = {str(allow_internet).lower()}{comment}{newline}"
+            lines[index] = f'network_mode = "{network_mode}"{comment}{newline}'
             replaced = True
             break
     if not replaced:
         raise SystemExit(
-            f"error: {config_path} must contain [environment].allow_internet "
+            f"error: {config_path} must contain [environment].network_mode "
             "so the runner can create the Oracle and agent snapshots"
         )
     config_path.write_text("".join(lines), encoding="utf-8")
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
     environment = parsed.get("environment")
-    if not isinstance(environment, dict) or environment.get("allow_internet") is not allow_internet:
+    if not isinstance(environment, dict) or environment.get("network_mode") != network_mode:
         raise SystemExit(
-            f"error: failed to set [environment].allow_internet={str(allow_internet).lower()} "
+            f'error: failed to set [environment].network_mode="{network_mode}" '
             f"in generated snapshot {config_path}"
         )
 
@@ -501,7 +506,7 @@ def snapshot_task_root(
     run_id: str,
     snapshot_label: str = "task-snapshot",
     *,
-    allow_internet: bool | None = None,
+    network_mode: str | None = None,
 ) -> Path:
     """Create an immutable copy of the single task for this Harbor run."""
 
@@ -515,8 +520,8 @@ def snapshot_task_root(
         ".runner-logs",
     )
     shutil.copytree(task_root, snapshot_root, symlinks=True, ignore=ignore)
-    if allow_internet is not None:
-        set_snapshot_allow_internet(snapshot_root, allow_internet)
+    if network_mode is not None:
+        set_snapshot_network_mode(snapshot_root, network_mode)
     stable_time = time.time() - 60.0
     for path in snapshot_root.rglob("*"):
         if not path.is_symlink():
@@ -2886,7 +2891,7 @@ def validate_modal_task_policy(
     tasks: list[Path],
     backend: str,
     *,
-    expected_allow_internet: bool = False,
+    expected_network_mode: str = "no-network",
 ) -> None:
     """Validate the network and Modal image contract for a task snapshot."""
     if backend != "modal":
@@ -2903,11 +2908,14 @@ def validate_modal_task_policy(
         if not isinstance(environment, dict):
             errors.append(f"{config_path}: missing [environment] table")
             continue
-        if environment.get("allow_internet") is not expected_allow_internet:
-            expected = str(expected_allow_internet).lower()
-            policy = "agent execution policy" if expected_allow_internet else "Oracle offline policy"
+        if environment.get("network_mode") != expected_network_mode:
+            policy = (
+                "agent execution policy"
+                if expected_network_mode == "public"
+                else "Oracle offline policy"
+            )
             errors.append(
-                f"{config_path}: [environment].allow_internet must be {expected} "
+                f'{config_path}: [environment].network_mode must be "{expected_network_mode}" '
                 f"for the {policy}"
             )
 
@@ -4965,8 +4973,8 @@ def main(argv: list[str]) -> int:
         default=True,
         help=(
             "Create separate immutable Oracle and agent snapshots before invoking "
-            "Harbor; the Oracle snapshot is offline and the agent snapshot allows "
-            "internet (default: enabled)."
+            'Harbor; the Oracle snapshot uses network_mode = "no-network" and the '
+            'agent snapshot uses network_mode = "public" (default: enabled).'
         ),
     )
     args = parser.parse_args(argv)
@@ -5070,13 +5078,13 @@ def main(argv: list[str]) -> int:
                 jobs_dir,
                 args.run_id,
                 snapshot_label="oracle-task-snapshot",
-                allow_internet=False,
+                network_mode="no-network",
             )
             oracle_snapshot_root = oracle_task_root
             validate_modal_task_policy(
                 [oracle_task_root],
                 args.env,
-                expected_allow_internet=False,
+                expected_network_mode="no-network",
             )
             if not args.oracle_sort:
                 agent_task_root = snapshot_task_root(
@@ -5084,13 +5092,13 @@ def main(argv: list[str]) -> int:
                     jobs_dir,
                     args.run_id,
                     snapshot_label="agent-task-snapshot",
-                    allow_internet=True,
+                    network_mode="public",
                 )
                 agent_snapshot_root = agent_task_root
                 validate_modal_task_policy(
                     [agent_task_root],
                     args.env,
-                    expected_allow_internet=True,
+                    expected_network_mode="public",
                 )
 
     if args.oracle_sort:
@@ -5106,7 +5114,7 @@ def main(argv: list[str]) -> int:
         ]
         if oracle_snapshot_root is not None:
             oracle_overview.append(
-                f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)"
+                f"Oracle snapshot: {oracle_snapshot_root} (network_mode=no-network)"
             )
         oracle_overview.extend(
             [
@@ -5211,9 +5219,9 @@ def main(argv: list[str]) -> int:
         f"task root: {task_root}",
     ]
     if oracle_snapshot_root is not None:
-        run_overview.append(f"Oracle snapshot: {oracle_snapshot_root} (allow_internet=false)")
+        run_overview.append(f"Oracle snapshot: {oracle_snapshot_root} (network_mode=no-network)")
     if agent_snapshot_root is not None:
-        run_overview.append(f"agent snapshot:  {agent_snapshot_root} (allow_internet=true)")
+        run_overview.append(f"agent snapshot:  {agent_snapshot_root} (network_mode=public)")
     run_overview.extend(
         [
             f"tasks:     {num_tasks}",
