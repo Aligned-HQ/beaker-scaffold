@@ -1138,6 +1138,49 @@ def print_remote_progress(
     return signature
 
 
+REMOTE_PROGRESS_SPINNER_FPS = 8.0
+
+
+def sleep_with_live_progress(
+    seconds: float,
+    *,
+    live: object | None,
+    status: dict[str, object] | None,
+    started: float,
+    agent_order: tuple[str, ...] | None,
+    spinner_index: int,
+) -> int:
+    """Sleep while the live table's spinner and elapsed clock keep moving.
+
+    The status poll delay backs off to ``--remote-poll-max`` (30s by default),
+    and the service can sit in one state for minutes. Without ticking here the
+    table would freeze between responses and an in-progress run would be
+    indistinguishable from a hung one. Returns the next spinner index.
+    """
+    if seconds <= 0:
+        return spinner_index
+    if live is None or status is None:
+        time.sleep(seconds)
+        return spinner_index
+    deadline = time.monotonic() + seconds
+    tick = 1.0 / REMOTE_PROGRESS_SPINNER_FPS
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            return spinner_index
+        time.sleep(min(tick, deadline - now))
+        spinner_index += 1
+        live.update(
+            remote_progress_table(
+                status,
+                elapsed_sec=time.monotonic() - started,
+                agent_order=agent_order,
+                spinner_index=spinner_index,
+            ),
+            refresh=True,
+        )
+
+
 def _poll_remote_status_loop(
     base: str,
     run_id: str,
@@ -1172,7 +1215,14 @@ def _poll_remote_status_loop(
                     f"(elapsed {format_elapsed(time.monotonic() - started)})",
                     flush=True,
                 )
-                time.sleep(wait)
+                spinner_index = sleep_with_live_progress(
+                    wait,
+                    live=live,
+                    status=last_status,
+                    started=started,
+                    agent_order=agent_order,
+                    spinner_index=spinner_index,
+                )
                 delay = min(maximum_delay, max(minimum_delay, delay * 2))
                 continue
             raise
@@ -1190,7 +1240,14 @@ def _poll_remote_status_loop(
                 )
                 spinner_index += 1
                 last_announcement = now
-            time.sleep(remote_retry_after(response_headers, delay))
+            spinner_index = sleep_with_live_progress(
+                remote_retry_after(response_headers, delay),
+                live=live,
+                status=last_status,
+                started=started,
+                agent_order=agent_order,
+                spinner_index=spinner_index,
+            )
             delay = min(maximum_delay, max(minimum_delay, delay * 2))
             continue
         etag = response_headers.get("etag", etag)
@@ -1219,7 +1276,14 @@ def _poll_remote_status_loop(
         if status.get("state") in REMOTE_TERMINAL_STATES:
             return status
         wait = remote_retry_after(response_headers, delay)
-        time.sleep(wait)
+        spinner_index = sleep_with_live_progress(
+            wait,
+            live=live,
+            status=status,
+            started=started,
+            agent_order=agent_order,
+            spinner_index=spinner_index,
+        )
         delay = min(maximum_delay, max(minimum_delay, delay * 2))
 
 
@@ -2191,12 +2255,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 except RemoteClientError as error:
                     if error.status != 409:
                         raise
-                    if attempt == 0 or (attempt + 1) % 5 == 0:
-                        print(
-                            f"remote archive: still finalizing; retrying manifest "
-                            f"({attempt + 1}/20)",
-                            flush=True,
-                        )
+                    print(
+                        f"remote archive: still finalizing; retrying manifest "
+                        f"({attempt + 1}/20, elapsed {format_elapsed(attempt + 1.0)})",
+                        flush=True,
+                    )
                     time.sleep(1.0)
             if manifest is None:
                 raise RemoteClientError(409, "trajectory_not_ready", "The service did not publish a trajectory archive.")
