@@ -623,7 +623,7 @@ in step 0.
 .
 ├── README.md                         # this guide: setup, authoring, run, submit
 ├── harbor_runner.py                  # Docker smoke test and isolated Harbor runner
-├── task_implemention.toml             # rubric consumed by task-review
+├── task_implementation.toml           # rubric consumed by task-review
 ├── scripts/
 │   ├── setup.sh                      # create the .venv, install deps, then check
 │   ├── check-setup.sh                # local toolchain and Docker check

@@ -315,11 +315,11 @@ else
     fail_check "Vendored runner is missing, not executable, or cannot start: $local_runner_file" "Restore harbor_runner.py, make it executable, and confirm that python3 harbor_runner.py --help succeeds."
 fi
 
-rubric_file="${REPO_ROOT}/task_implemention.toml"
+rubric_file="${REPO_ROOT}/task_implementation.toml"
 if [[ -f "$rubric_file" ]] && "$PYTHON_BIN" -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$rubric_file" >/dev/null 2>&1; then
     pass_check "Task-review rubric: $rubric_file is valid TOML"
 else
-    fail_check "Task-review rubric is missing or invalid: $rubric_file" "Restore a valid task_implemention.toml file at the repository root and rerun this check."
+    fail_check "Task-review rubric is missing or invalid: $rubric_file" "Restore a valid task_implementation.toml file at the repository root and rerun this check."
 fi
 
 for skill_name in task-fixer task-review trajectory-review; do

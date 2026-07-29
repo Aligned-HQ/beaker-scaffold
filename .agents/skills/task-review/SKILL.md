@@ -51,10 +51,8 @@ create a separate deployment verdict.
 
 ## Inputs
 
-- **Rubric**: `task_implementation.toml` at the repo root. This checkout may
-  still use the historical spelling `task_implemention.toml`; if the corrected
-  name is absent, read that legacy file. Use the one rubric file that exists,
-  and read every `[[criteria]]` entry (`name`, `description`, and `guidance`).
+- **Rubric**: `task_implementation.toml` at the repo root. Read every
+  `[[criteria]]` entry (`name`, `description`, and `guidance`).
 - **Target**: a Harbor task folder, normally under `task/`. Expected layout:
   - `task.toml`
   - `instruction.md`
