@@ -82,7 +82,28 @@ Tests must resist adversarial shortcuts agents commonly attempt: creating fake t
 
 The answer must not be embedded in environment files, Docker image layers, or accessible through trivial file inspection. Tests should not depend on mutable external resources that allow shortcuts.
 
-PASS if the task setup actively prevents common adversarial shortcuts and does not leak answers through environment files or image layers. FAIL if answers are embedded in accessible files, tests can be trivially bypassed, or the environment enables obvious shortcuts."""
+The supported submission sandbox may run the agent and verifier in the same
+runtime image and may not support a separate verifier image or a separate
+artifact-transfer boundary. Shared-container verification is therefore
+acceptable and is not, by itself, an anti-cheat failure. Do not require
+`verifier.environment_mode = "separate"`, a second Docker image, or artifact
+transfer solely to satisfy this criterion. When separate verification is not
+available, assess the protections the platform does provide — such as keeping
+solution code, hidden fixtures, and verifier-only files out of the runtime
+image and checking the agent's declared output artifacts — and report any
+residual risk without treating unsupported isolation as a required fix.
+
+Do not fail an otherwise compliant task solely because a shared image provides
+less process isolation than a separate verifier would, including the
+theoretical possibility of agent-controlled import hooks or installed-library
+changes. Treat those as residual-risk notes unless the task actually exposes
+answers or provides a concrete, demonstrated grading bypass.
+
+PASS if the task setup and supported harness do not leak answers through
+environment files or image layers and do not provide a concrete, demonstrated
+shortcut to pass incorrectly. FAIL if answers are embedded in accessible files,
+tests can be trivially bypassed, or the environment enables an actual grading
+bypass."""
 
 [[criteria]]
 name = "task_security"
