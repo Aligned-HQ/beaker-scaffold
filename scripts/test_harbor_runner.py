@@ -1202,6 +1202,7 @@ def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
             "#!/bin/sh\n"
             "mkdir -p \"$PWD/output\"\n"
             "printf '%s\\n' '{\"ok\": true}' > \"$PWD/output/result.json\"\n"
+            "sleep 0.3\n"
             "exit 0\n",
             encoding="utf-8",
         )
@@ -1232,27 +1233,34 @@ def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
         os.environ["PATH"] = f"{bin_dir}:{old_path}"
         jobs_dir = root / "harbor-jobs"
         trajectories_dir = root / "trajectories"
+        output = io.StringIO()
         try:
-            returncode = harbor_runner.main(
-                [
-                    str(task),
-                    "--quick",
-                    "--quick-agent",
-                    "claude",
-                    "--quick-timeout-sec",
-                    "30",
-                    "--run-id",
-                    "quick-fixture",
-                    "--jobs-dir",
-                    str(jobs_dir),
-                    "--completed-trajectories-dir",
-                    str(trajectories_dir),
-                ]
-            )
+            with contextlib.redirect_stdout(output):
+                returncode = harbor_runner.main(
+                    [
+                        str(task),
+                        "--quick",
+                        "--quick-agent",
+                        "claude",
+                        "--quick-timeout-sec",
+                        "30",
+                        "--progress-interval-sec",
+                        "0.1",
+                        "--run-id",
+                        "quick-fixture",
+                        "--jobs-dir",
+                        str(jobs_dir),
+                        "--completed-trajectories-dir",
+                        str(trajectories_dir),
+                    ]
+                )
         finally:
             os.environ["PATH"] = old_path
 
         assert returncode == 0
+        rendered = output.getvalue()
+        assert "Agent running..." in rendered
+        assert rendered.count("Agent running...") >= 2
         assert not list(jobs_dir.glob("*.modal-run.json"))
         job_dir = jobs_dir / "quick-fixture-quick-claude"
         trial_dir = job_dir / "quick-fixture.agent__claude"

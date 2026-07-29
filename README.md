@@ -560,7 +560,10 @@ evidence remains in `harbor-jobs/` and, when archiving is enabled, under
 `trajectories/quick/<run-id>/` so it cannot be mistaken for the required
 three-agent campaign. Use `--quick-agent claude` to select Claude Code
 explicitly. `--quick --dry-run` previews the host command without starting
-Docker or the agent.
+Docker or the agent. While the host agent is running, the runner prints an
+`Agent running...` heartbeat immediately and at `--progress-interval-sec`
+(30 seconds by default); the full agent transcript is in the printed runner
+log.
 
 ## 8. Run the Harbor task runner
 

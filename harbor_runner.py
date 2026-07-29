@@ -3391,8 +3391,60 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
                 )
                 with PROCESS_LOCK:
                     RUNNING_PROCESSES[trial.job_name] = process
+                agent_started = time.monotonic()
+                progress_interval = getattr(
+                    args,
+                    "progress_interval_sec",
+                    LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS,
+                )
+                next_progress_at = (
+                    agent_started + progress_interval
+                    if progress_interval > 0
+                    else None
+                )
+
+                def announce_agent_running() -> None:
+                    line = (
+                        "Agent running... "
+                        f"({format_elapsed(time.monotonic() - agent_started)} elapsed)"
+                    )
+                    print(line, flush=True)
+                    log.write(line + "\n")
+                    log.flush()
+
+                # The agent's transcript is intentionally kept in the runner log,
+                # so announce its start and keep a visible heartbeat on the host.
+                announce_agent_running()
+                deadline = agent_started + agent_timeout
                 try:
-                    agent_returncode = process.wait(timeout=agent_timeout)
+                    while True:
+                        now = time.monotonic()
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(
+                                process.args,
+                                agent_timeout,
+                            )
+                        wait_timeout = min(5.0, remaining)
+                        if next_progress_at is not None:
+                            wait_timeout = min(
+                                wait_timeout,
+                                max(0.1, next_progress_at - now),
+                            )
+                        try:
+                            agent_returncode = process.wait(timeout=wait_timeout)
+                            break
+                        except subprocess.TimeoutExpired:
+                            now = time.monotonic()
+                            if (
+                                next_progress_at is not None
+                                and now >= next_progress_at
+                            ):
+                                announce_agent_running()
+                                while next_progress_at <= now:
+                                    next_progress_at += progress_interval
+                            if now >= deadline:
+                                raise
                 except subprocess.TimeoutExpired:
                     process.terminate()
                     try:
@@ -5618,9 +5670,9 @@ def main(argv: list[str]) -> int:
         type=float,
         default=LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS,
         help=(
-            "While local Oracle and agent jobs are running, print completed "
-            "trial counts and pass/fail stats at this interval; set <= 0 to "
-            "disable local progress (default: 30)."
+            "While local Oracle, agent, or --quick agent jobs are running, "
+            "print progress at this interval; set <= 0 to disable periodic "
+            "local progress (default: 30)."
         ),
     )
     parser.add_argument(
