@@ -159,6 +159,8 @@ MODAL_RUN_MANIFEST_SUFFIX = ".modal-run.json"
 QUICK_AGENT_CHOICES = ("auto", "claude", "claude-code", "codex")
 QUICK_DEFAULT_AGENT_TIMEOUT_SEC = 1800.0
 QUICK_DEFAULT_VERIFIER_TIMEOUT_SEC = 300.0
+QUICK_AGENT_PROGRESS_FPS = 8.0
+QUICK_AGENT_PROGRESS_FRAMES = ("|", "/", "-", "\\")
 DOCKERFILE_FROM_RE = re.compile(
     r"^\s*FROM(?:\s+--platform=(?P<platform>\S+))?\s+(?P<image>\S+)",
     re.IGNORECASE,
@@ -3380,6 +3382,13 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
             log.write(f"agent timeout: {agent_timeout:.1f}s\n")
             log.flush()
             process: subprocess.Popen[str] | None = None
+            progress_tty = False
+
+            def clear_agent_progress() -> None:
+                if progress_tty:
+                    sys.stdout.write("\r\033[2K")
+                    sys.stdout.flush()
+
             try:
                 process = subprocess.Popen(
                     agent_command,
@@ -3397,24 +3406,52 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
                     "progress_interval_sec",
                     LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS,
                 )
+                progress_tty = bool(
+                    getattr(sys.stdout, "isatty", lambda: False)()
+                )
+                display_interval = (
+                    1.0 / QUICK_AGENT_PROGRESS_FPS
+                    if progress_tty
+                    else progress_interval
+                )
+                if display_interval <= 0:
+                    display_interval = None
                 next_progress_at = (
+                    agent_started + display_interval
+                    if display_interval is not None
+                    else None
+                )
+                next_log_progress_at = (
                     agent_started + progress_interval
                     if progress_interval > 0
                     else None
                 )
+                progress_frame = 0
 
-                def announce_agent_running() -> None:
+                def announce_agent_running(*, write_log: bool = False) -> None:
+                    nonlocal progress_frame
                     line = (
-                        "Agent running... "
+                        (
+                            f"[{QUICK_AGENT_PROGRESS_FRAMES[progress_frame % len(QUICK_AGENT_PROGRESS_FRAMES)]}] "
+                            if progress_tty
+                            else ""
+                        )
+                        + "Agent running... "
                         f"({format_elapsed(time.monotonic() - agent_started)} elapsed)"
                     )
-                    print(line, flush=True)
-                    log.write(line + "\n")
-                    log.flush()
+                    if progress_tty:
+                        sys.stdout.write("\r\033[2K" + line)
+                        sys.stdout.flush()
+                    else:
+                        print(line, flush=True)
+                    if write_log:
+                        log.write(line + "\n")
+                        log.flush()
+                    progress_frame += 1
 
                 # The agent's transcript is intentionally kept in the runner log,
                 # so announce its start and keep a visible heartbeat on the host.
-                announce_agent_running()
+                announce_agent_running(write_log=True)
                 deadline = agent_started + agent_timeout
                 try:
                     while True:
@@ -3440,9 +3477,19 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
                                 next_progress_at is not None
                                 and now >= next_progress_at
                             ):
-                                announce_agent_running()
+                                write_log = (
+                                    not progress_tty
+                                    or (
+                                        next_log_progress_at is not None
+                                        and now >= next_log_progress_at
+                                    )
+                                )
+                                announce_agent_running(write_log=write_log)
+                                if write_log and next_log_progress_at is not None:
+                                    while next_log_progress_at <= now:
+                                        next_log_progress_at += progress_interval
                                 while next_progress_at <= now:
-                                    next_progress_at += progress_interval
+                                    next_progress_at += display_interval
                             if now >= deadline:
                                 raise
                 except subprocess.TimeoutExpired:
@@ -3470,6 +3517,7 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
                 exception = ("QuickAgentLaunchError", str(exc))
                 agent_returncode = 127
             finally:
+                clear_agent_progress()
                 if process is not None:
                     with PROCESS_LOCK:
                         RUNNING_PROCESSES.pop(trial.job_name, None)
@@ -5671,7 +5719,8 @@ def main(argv: list[str]) -> int:
         default=LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS,
         help=(
             "While local Oracle, agent, or --quick agent jobs are running, "
-            "print progress at this interval; set <= 0 to disable periodic "
+            "print non-interactive progress at this interval; interactive "
+            "--quick status refreshes at 8 FPS; set <= 0 to disable periodic "
             "local progress (default: 30)."
         ),
     )

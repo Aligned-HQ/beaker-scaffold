@@ -1192,6 +1192,10 @@ def check_quick_workspace_is_public_only() -> None:
 
 
 def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
+    class TTYCapture(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
     with tempfile.TemporaryDirectory(prefix="beaker-quick-run-") as raw:
         root = Path(raw)
         task = make_quick_task(root)
@@ -1233,7 +1237,7 @@ def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
         os.environ["PATH"] = f"{bin_dir}:{old_path}"
         jobs_dir = root / "harbor-jobs"
         trajectories_dir = root / "trajectories"
-        output = io.StringIO()
+        output = TTYCapture()
         try:
             with contextlib.redirect_stdout(output):
                 returncode = harbor_runner.main(
@@ -1261,6 +1265,7 @@ def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
         rendered = output.getvalue()
         assert "Agent running..." in rendered
         assert rendered.count("Agent running...") >= 2
+        assert "\r\033[2K" in rendered
         assert not list(jobs_dir.glob("*.modal-run.json"))
         job_dir = jobs_dir / "quick-fixture-quick-claude"
         trial_dir = job_dir / "quick-fixture.agent__claude"
