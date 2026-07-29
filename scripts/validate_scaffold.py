@@ -52,8 +52,9 @@ PLACEHOLDER_MARKERS = (
 
 HOST_PATH_RE = re.compile(r"/(?:Users|Volumes|home)/[^\s'\"`]+")
 BAD_ENV_COPY_RE = re.compile(r"^\s*COPY\s+(?:environment|tests|solution)(?:/|\s)", re.MULTILINE)
-RUNTIME_INSTALL_RE = re.compile(
-    r"(?:apt-get\s+install|pip\s+install|curl\s+.*(?:sh|bash))", re.IGNORECASE
+OFFLINE_WHEEL_INSTALL_RE = re.compile(
+    r"pip\s+install(?=[^\n]*--no-index)(?=[^\n]*--find-links)",
+    re.IGNORECASE,
 )
 DOCKER_FROM_RE = re.compile(
     r"^\s*FROM(?:\s+--platform=(?P<platform>\S+))?\s+(?P<image>\S+)",
@@ -330,7 +331,14 @@ class Checker:
             for fragment in ("LOG_DIR", "reward.txt", "pytest"):
                 if fragment not in text:
                     self.error(f"tests/test.sh is missing reward/verifier handling: {fragment}")
-            if RUNTIME_INSTALL_RE.search(text):
+            has_system_or_network_install = re.search(
+                r"(?:apt-get\s+install|curl\s+.*(?:sh|bash))", text, re.IGNORECASE
+            )
+            has_online_pip_install = (
+                re.search(r"pip\s+install", text, re.IGNORECASE)
+                and not OFFLINE_WHEEL_INSTALL_RE.search(" ".join(text.split()))
+            )
+            if has_system_or_network_install or has_online_pip_install:
                 self.error(
                     "tests/test.sh appears to install packages or execute a network bootstrap at verification time"
                 )
