@@ -4,6 +4,8 @@ This repository is a starter project for a reproducible scientific-computing tas
 
 This file is the whole authoring guide, the same instructions are also available in this [Google Document](https://docs.google.com/document/d/1EOXHxE6kHObi7E-NY54DZwdSaDAAzHwqJ9In21nLtGE/edit?usp=sharing)
 
+For a fully worked sample, see the [Aligned Beaker submission example](https://github.com/Aligned-HQ/aligned_beaker_submission).
+
 ## Motivation and intended flow
 
 These tasks are being created to train and evaluate AI systems on realistic
