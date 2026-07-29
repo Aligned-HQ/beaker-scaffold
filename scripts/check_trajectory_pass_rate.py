@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the agent pass rate using the archived trajectory evidence."""
+"""Validate the Gemini difficulty gate and report advisory agent pass rates."""
 from __future__ import annotations
 
 import argparse
@@ -396,18 +396,39 @@ def main() -> int:
         f"({counts[agent].passed / counts[agent].trials * 100:.1f}%)"
         for agent in AGENTS
     )
-    if average >= 0.5:
+
+    gemini = counts["gemini"]
+    if gemini.passed == gemini.trials:
+        if gemini.trials == 3:
+            gemini_result = "Gemini passed all three trials (3/3, 100.0%)."
+        else:
+            gemini_result = (
+                "Gemini passed every observed trial "
+                f"({format_counts(gemini)}, 100.0%)."
+            )
         print(
-            "ERROR: task does not meet the submission criteria: the average "
-            "Claude/Codex/Gemini pass rate must be below 50% "
-            f"(trajectories report {average * 100:.1f}%: {rendered})",
+            "ERROR: HARD SUBMISSION FAILURE: "
+            f"{gemini_result} The task is too easy for the benchmark; do not "
+            "submit it. Increase the genuine scientific difficulty and rerun "
+            "all three agents. The overall average pass-rate check is advisory "
+            f"only (trajectories report {average * 100:.1f}%: {rendered}).",
             file=sys.stderr,
         )
         return 1
 
+    if average >= 0.5:
+        print(
+            "WARNING: task may be too easy: the overall Claude/Codex/Gemini "
+            "pass rate is "
+            f"{average * 100:.1f}% (the < 50% target is advisory only; "
+            f"Gemini failed {gemini.trials - gemini.passed}/{gemini.trials} "
+            f"trial(s): {rendered}).",
+            file=sys.stderr,
+        )
+
     print(
         "Trajectory pass-rate check (archived trajectories): "
-        f"{rendered}; average {average * 100:.1f}% (< 50%)."
+        f"{rendered}; average {average * 100:.1f}%; Gemini failed at least once."
     )
     return 0
 

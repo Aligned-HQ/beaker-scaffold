@@ -33,7 +33,11 @@ if validation_output="$(check_trajectory_pass_rate 2>&1)"; then
 else
     red=$'\033[31m'
     reset=$'\033[0m'
-    printf '%s\n' "${red}WARNING: task does not meet the submission criteria.${reset}" >&2
+    if [[ "$validation_output" == *"HARD SUBMISSION FAILURE"* ]]; then
+        printf '%s\n' "${red}HARD FAILURE: do not submit this task until the Gemini difficulty gate is fixed.${reset}" >&2
+    else
+        printf '%s\n' "${red}WARNING: task does not meet the submission criteria.${reset}" >&2
+    fi
     printf '%s\n' "${red}Criteria details: ${validation_output}${reset}" >&2
     printf '%s\n' "${red}Packaging will continue so you can inspect the submission.${reset}" >&2
 fi

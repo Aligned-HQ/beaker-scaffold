@@ -27,7 +27,7 @@ different agents. Each agent must create its own solution without seeing the
 reference implementation, hidden truth, or verifier-only fixtures. The agents'
 outputs are evaluated by the tests and their work is reviewed afterward.
 
-![How the four authored files flow through a run: solve.py drives the Oracle run and instruction.md drives the agent runs; both produce output files at the paths you promised; the same verifier from tests/ grades both by recomputing from the private answer key; the Oracle must pass and the agents must stay under a 50% pass rate. process.md never executes.](assets/terminal_bench_contributor_four_files_flow.png)
+![How the four authored files flow through a run: solve.py drives the Oracle run and instruction.md drives the agent runs; both produce output files at the paths you promised; the same verifier from tests/ grades both by recomputing from the private answer key; the Oracle must pass and Gemini must fail at least once. The overall agent pass rate is an advisory difficulty signal. process.md never executes.](assets/terminal_bench_contributor_four_files_flow.png)
 
 The load-bearing relationships behind the picture:
 
@@ -47,7 +47,14 @@ should be difficult enough that the agents may fail or disagree. This exposes
 where scientific reasoning, method selection, implementation, and validation
 remain challenging for the models.
 
-The average pass rate across the Claude, Codex, and Gemini agent runs must be strictly below 50% (Oracle is not included), so the agents must fail more than half the time on average. If the average pass rate is 50% or higher, the task is too easy to submit: increase the genuine scientific difficulty—such as the data challenge, meaningful method choices, or validation burden—while keeping every tested requirement explicit in `instruction.md`, then rerun the authoring workflow.
+The hard trajectory gate is that Gemini must fail at least once across the
+three agent trials. If Gemini passes all three, the task is too easy for this
+benchmark and must not be submitted until its genuine scientific difficulty is
+increased. The overall Claude/Codex/Gemini pass rate remains an advisory
+difficulty signal: a rate of 50% or higher produces a warning that the task
+may be too easy, but it does not fail the check by itself. Keep every tested
+requirement explicit in `instruction.md`, then rerun the authoring workflow
+after any difficulty change.
 
 The instruction is the agent's entire scientific specification. Tests must not
 require files, fields, keys, methods, thresholds, units, or other properties
@@ -592,11 +599,14 @@ The trajectory review runs your agent (Cluade Code or Codex) inside a wrapper an
 task bugs, prompt/test mismatches, tolerance problems, missing keys, and other
 clerical issues. If this fails you must update the task, rerun the harbor_runner and return the trajectory review.
 
-Use the trajectory results to apply the difficulty gate: the average Claude,
-Codex, and Gemini pass rate must be below 50%, ignoring the Oracle. If it is
-50% or higher, revise the task to make the scientific workflow harder for the
-agents while remaining solvable by a human expert. Rerun the fixer, review,
-smoke test, Harbor campaign, and trajectory review after changing the task.
+Use the trajectory results to apply the difficulty checks. The hard gate is
+that Gemini must fail at least once across the three trials; if Gemini passes
+all three, treat that as a hard failure and do not submit until the scientific
+workflow is made harder while remaining solvable by a human expert. The
+overall Claude/Codex/Gemini pass rate is advisory: 50% or higher produces a
+warning that the task may be too easy, but is not a failure by itself. Rerun
+the fixer, review, smoke test, Harbor campaign, and trajectory review after
+changing the task.
 
 ## 10. Run strict scaffold validation
 
@@ -633,11 +643,12 @@ Run `package-submission` as the last local authoring step. It creates a
 If `submission/` already exists, the script asks for confirmation before
 replacing it. It validates the archived trial evidence in `trajectories/`,
 using its `summary.json` or direct agent trial folders rather than the local
-Harbor job-output directory. The average Claude/Codex/Gemini pass rate should
-be strictly below 50%; Oracle is ignored. A rate of 50% or higher produces a
-red warning, but does not prevent packaging, so the assembled submission can
-still be inspected. Remove generated caches, check that all intended inputs
-are tracked, and inspect the final diff.
+Harbor job-output directory. Gemini must fail at least once; passing all three
+Gemini trials is a hard failure with an explicit do-not-submit message. The
+overall Claude/Codex/Gemini pass rate is advisory: 50% or higher produces a
+warning that the task may be too easy, but does not prevent packaging, so the
+assembled submission can still be inspected. Remove generated caches, check
+that all intended inputs are tracked, and inspect the final diff.
 
 Upload the resulting `submission/` directory to the Workbench task you claimed
 in step 0.

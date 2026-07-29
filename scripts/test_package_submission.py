@@ -84,7 +84,25 @@ def check_checker_uses_trajectories() -> None:
         assert "archived trajectories" in result.stdout
 
 
-def check_packaging_warns_but_continues() -> None:
+def check_high_average_is_advisory_when_gemini_fails() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-pass-rate-warning-") as raw:
+        root = Path(raw)
+        make_fixture(
+            root,
+            {
+                "claude-code": [1, 1, 1],
+                "codex": [1, 1, 1],
+                "gemini-cli": [1, 1, 0],
+            },
+        )
+        result = run_checker(root)
+        assert result.returncode == 0, result.stderr
+        assert "WARNING: task may be too easy" in result.stderr
+        assert "advisory only" in result.stderr
+        assert "Gemini failed 1/3 trial(s)" in result.stderr
+
+
+def check_packaging_reports_gemini_hard_failure_but_continues() -> None:
     with tempfile.TemporaryDirectory(prefix="beaker-package-submission-") as raw:
         root = Path(raw)
         make_fixture(
@@ -103,9 +121,10 @@ def check_packaging_warns_but_continues() -> None:
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        assert "\033[31mWARNING: task does not meet the submission criteria." in result.stderr
+        assert "\033[31mHARD FAILURE: do not submit this task" in result.stderr
         assert "Criteria details:" in result.stderr
-        assert "average Claude/Codex/Gemini pass rate" in result.stderr
+        assert "HARD SUBMISSION FAILURE" in result.stderr
+        assert "Gemini passed all three trials" in result.stderr
         assert "Claude 2/3" in result.stderr
         assert (root / "submission/task").is_dir()
         assert (root / "submission/trajectories").is_dir()
@@ -115,5 +134,6 @@ def check_packaging_warns_but_continues() -> None:
 
 if __name__ == "__main__":
     check_checker_uses_trajectories()
-    check_packaging_warns_but_continues()
+    check_high_average_is_advisory_when_gemini_fails()
+    check_packaging_reports_gemini_hard_failure_but_continues()
     print("Submission packaging checks passed")

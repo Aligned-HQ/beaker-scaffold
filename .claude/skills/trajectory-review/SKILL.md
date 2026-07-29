@@ -20,12 +20,14 @@ tooling failures before the agent has a meaningful chance to inspect or solve
 the task. Report these separately as ignored trials; do not count them as task
 failures.
 
-Difficulty is not a defect. The submission service checks pass@k, but a task
-whose pass rate falls outside its expected band is not thereby invalid — the
-project's own gate is an average agent pass rate strictly below 50%, and agents
-failing for genuine scientific reasons is the intended outcome. Judge whether
-each failure was scientific, structural, or platform noise; do not convert a low
-pass rate into a task bug on its own.
+Difficulty is not a defect. The submission checker has one hard difficulty
+gate: Gemini must fail at least once across the three trials. If Gemini passes
+all three, report that hard gate failure and that the task is likely too easy
+for the benchmark. The overall Claude/Codex/Gemini pass rate is an advisory
+warning only; a rate at or above 50% suggests the task may be too easy but does
+not fail the check by itself. Judge whether each failure was scientific,
+structural, or platform noise; do not convert a low pass rate into a task bug
+on its own.
 
 ## Inputs
 
