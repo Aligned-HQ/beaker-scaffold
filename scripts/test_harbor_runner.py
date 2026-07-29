@@ -537,6 +537,78 @@ def check_remote_archive_flag_matches_local_behavior() -> None:
     assert not trajectories_dir.exists()
 
 
+def check_remote_start_error_preserves_service_message() -> None:
+    original_request = harbor_runner.remote_json_request
+
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-start-error-test-") as raw:
+        root = Path(raw)
+        task_root = root / "task"
+        task_root.mkdir()
+        (task_root / "task.toml").write_text("", encoding="utf-8")
+        (task_root / "instruction.md").write_text("task\n", encoding="utf-8")
+        for directory in ("solution", "tests", "environment"):
+            (task_root / directory).mkdir()
+        jobs_dir = root / "harbor-jobs"
+
+        def fake_remote_json_request(
+            method: str,
+            url: str,
+            token: str,
+            **kwargs: object,
+        ) -> tuple[int, dict[str, object], dict[str, str]]:
+            if method == "POST" and url.endswith("/runs"):
+                return 201, {"run_id": "hr_123456789012", "state": "UPLOADING"}, {}
+            if method == "POST" and url.endswith(":start"):
+                raise harbor_runner.RemoteClientError(
+                    422,
+                    "archive_validation",
+                    "The Harbor task bundle failed archive validation.",
+                )
+            raise AssertionError(f"unexpected remote request: {method} {url}")
+
+        args = SimpleNamespace(
+            env="modal",
+            archive_only=False,
+            oracle_sort=False,
+            dry_run=False,
+            env_file=[],
+            agent_env=[],
+            verifier_env=[],
+            environment_kwarg=[],
+            agent_kwarg=[],
+            artifact=[],
+            modal_secret=[],
+            workbench_token="test-token",
+            remote_poll_min=0.25,
+            remote_poll_max=1.0,
+            remote_progress_interval_sec=30.0,
+            service_url="https://example.test/v1",
+            run=[],
+            n_concurrent=None,
+            default_concurrency=3,
+            repeats=1,
+            jobs_dir=jobs_dir,
+            run_id="remote-start-error",
+            resume=False,
+            archive_completed=False,
+            cancel_on_interrupt=True,
+            pass_threshold=1.0,
+            completed_trajectories_dir=root / "trajectories",
+        )
+
+        harbor_runner.remote_json_request = fake_remote_json_request  # type: ignore[assignment]
+        error_output = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(error_output):
+                assert harbor_runner.run_remote(task_root, args) == 2
+        finally:
+            harbor_runner.remote_json_request = original_request
+
+    assert error_output.getvalue().strip() == (
+        "remote start rejected: The Harbor task bundle failed archive validation."
+    )
+
+
 def check_remote_oracle_exception_downloads_archive() -> None:
     original_request = harbor_runner.remote_json_request
     original_poll = harbor_runner.poll_remote_status
@@ -1062,6 +1134,7 @@ if __name__ == "__main__":
     check_remote_archive_extracts_evidence_without_task_files()
     check_remote_archive_refuses_non_trajectory_manifest()
     check_remote_archive_flag_matches_local_behavior()
+    check_remote_start_error_preserves_service_message()
     check_remote_oracle_exception_downloads_archive()
     check_remote_service_error_skips_archive_download()
     check_sigterm_enters_cleanup_path()

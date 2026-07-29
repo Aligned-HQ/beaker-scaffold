@@ -2017,7 +2017,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 )
             except RemoteClientError as error:
                 if error.status in {400, 401, 403, 409, 422}:
-                    print(f"remote request rejected: {error.message}", file=sys.stderr)
+                    print(f"remote request rejected: {error}", file=sys.stderr)
                     return 2
                 raise
             run_id = created.get("run_id")
@@ -2053,7 +2053,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 )
             except RemoteClientError as error:
                 if error.status in {400, 401, 403, 409, 422}:
-                    print(f"remote start rejected: {error.message}", file=sys.stderr)
+                    print(f"remote start rejected: {error}", file=sys.stderr)
                     return 2
                 raise
             print(f"remote run: {run_id} ({started.get('state', 'QUEUED')})", flush=True)
@@ -2083,7 +2083,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     if error.status == 409 and error.code == "bundle_not_found":
                         started = None
                     elif error.status in {400, 401, 403, 409, 422}:
-                        print(f"remote start rejected: {error.message}", file=sys.stderr)
+                        print(f"remote start rejected: {error}", file=sys.stderr)
                         return 2
                     else:
                         raise
@@ -2113,7 +2113,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                         )
                     except RemoteClientError as error:
                         if error.status in {400, 401, 403, 409, 422}:
-                            print(f"remote start rejected: {error.message}", file=sys.stderr)
+                            print(f"remote start rejected: {error}", file=sys.stderr)
                             return 2
                         raise
                 print(f"remote run: {run_id} ({started.get('state', 'QUEUED')})", flush=True)
