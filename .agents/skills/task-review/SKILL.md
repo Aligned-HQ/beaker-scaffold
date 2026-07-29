@@ -1,107 +1,60 @@
 ---
 name: task-review
-description: Score a Harbor task folder against all criteria in
-  `task_implemention.toml` and produce a PASS / FAIL / N/A scorecard with
-  evidence. Use when the user asks to "review this task", "score this task",
-  "grade the task instructions", "task scorecard", or points the skill at a
-  task folder for evaluation against the rubric.
+description: Review a Harbor task folder against every criterion in the
+  repository rubric and produce an evidence-backed PASS / FAIL / N/A report
+  with totals and prioritized fixes. Use when the user asks to "review this
+  task", "score this task", "grade the task instructions", "task scorecard",
+  or points the skill at a task folder for evaluation against the rubric.
 ---
 
-Read every criterion in the repo-root `task_implemention.toml`, evaluate each against the target task folder, and emit a single scorecard. Be skeptical and concrete: cite file paths and line numbers as evidence for every verdict. Calibrate the review to a natural prompt that a domain researcher could give an agent. Do not demand that the prompt prescribe an implementation when a reasonable researcher could choose a conventional method and produce the requested scientific outcome.
+Review only the criteria declared in the repository rubric. Do not add separate
+deployment gates, client-policy checks, holistic requirements, or extra verdict
+rows. Cite file paths and line numbers for every criterion verdict.
 
-Review the public contract and the verifier together. A verifier may use private
-fixtures and independent recomputation, but it must not surprise a reasonable
-solver with material requirements that are absent from the instruction. Prefer
-outcome-based, method-agnostic checks over tests that reproduce one reference
-algorithm. Distinguish genuine ambiguity or contradiction from ordinary
-scientific discretion: an agent may reasonably infer a method, numerical
-routine, or routine output representation from the stated objective and
-domain context.
+Use a proportional, researcher-centered standard. The instruction should read
+like a natural prompt from a researcher: it should state the scientific goal,
+relevant inputs, meaningful constraints, and useful outputs or decision. Assume
+the agent can make a reasonable choice of method, numerical routine, library,
+and routine output representation from that context. Do not fail a task merely
+because the instruction omits a conventional implementation detail.
 
-When suggesting repairs, use the smallest useful change. If the prompt leaks
-the answer, remove the expected model, value, or outcome from `instruction.md`
-while retaining the scientific context and candidate definitions. If the
-verifier is tied to one method, simplify it to validate shared outcomes and
-accept scientifically defensible alternatives. If a conventional detail is
-omitted but the task remains solvable, do not turn that omission into a
-failure or recommend a step-by-step recipe.
+Review the public contract and verifier together. Every material requirement
+that determines whether an answer passes should be visible in `instruction.md`
+at the level of the requested outcome. Private fixtures, independent
+recomputation, and reasonable tolerances are not hidden requirements by
+themselves. Prefer tests that execute the agent's work and accept scientifically
+defensible methods over tests that reproduce one reference algorithm or exact
+intermediate values.
 
-## Client deployment gates
+Mark `FAIL` only for a clear, material violation of a rubric criterion. Treat
+rough guides and examples proportionately; do not turn normal scientific
+discretion, an inferable output convention, or a reasonable method choice into
+a failure. Keep security and anti-cheating findings concrete and strict.
 
-Submitted tasks are validated by Google's sandboxed execution service, which
-ignores most `task.toml` parameters. Score these gates in addition to the rubric
-criteria; a task that violates one is not ready for upload even if its
-scientific verifier passes. Cite evidence for each, and mark a gate
-**UNVERIFIED** rather than assuming it passes when the evidence is unavailable.
+When suggesting repairs, use the smallest useful change:
 
-- **Network**: `[environment].allow_internet` must be `false` (the project
-  validator requires it) and `[environment].network_mode` must be
-  `"no-network"` (what the submission sandbox reads). `allow_internet = true` is
-  blocked and fails pre-validation immediately; it is deprecated upstream in
-  favour of `network_mode`. Runtime and
-  verifier execution must not call live APIs, download files, install packages,
-  or contact remote databases. Never recommend enabling internet; the client
-  must supply an approved offline or preinstalled adapter.
-- **Single container**: the sandbox runs one container and never builds
-  `tests/Dockerfile`. FAIL when a verifier dependency exists only in the
-  verifier image, or when hidden truth is produced by a builder stage in
-  `tests/Dockerfile` instead of being checked in under `tests/data/`.
-- **Fail → pass transition**: validation runs `test.sh` before the solution
-  (must fail) and again after it (must pass). FAIL a verifier that would pass on
-  an untouched environment — one that skips when outputs are missing, swallows
-  its own assertions, writes a default passing reward, or asserts nothing
-  substantive.
-- **Idempotent verifier**: `test.sh` may run repeatedly. FAIL when it creates
-  state it neither resets nor tolerates on a second run.
-- **Reward signal**: `test.sh` must write the reward on both branches to
-  `/logs/tests/reward.txt` or `/logs/verifier/reward.txt` before exiting.
-- **No runtime installs**: an install command in `test.sh` or `solve.sh` is
-  rejected by pre-validation. Dependencies belong in the image.
-- **No `/tmp` staging at build time**: the sandbox mounts a clean tmpfs over
-  `/tmp`, erasing anything the image left there. Wheelhouses and caches belong
-  under `/opt/` or `/app/`.
-- **Image**: single-architecture `linux/amd64`, pinned by SHA256 digest, and no
-  larger than **2 GB (2,000,000,000 bytes)**. Use `docker image inspect --format
-  '{{.Size}}' <image-tag>` on a built image; do not infer success from the
-  Dockerfile or compressed layer sizes. Manifest lists and `:latest` tags fail
-  the pull.
-- **Ignored parameters**: `verifier.timeout_sec` (a fixed 1-hour timeout
-  applies), `environment.docker_image`, `cpus`, `gpu*`, `tpu*`, `healthcheck*`,
-  `mcp_servers*`, `verifier.environment_mode`, and Dockerfile `ENTRYPOINT`/`CMD`
-  are all discarded. When scoring `resource_configuration`, judge whether the
-  workload fits the fixed sandbox budget (64 GB RAM, 4 CPUs, no GPU, one hour)
-  rather than whether the fields look tidy. Flag an `env` template without a
-  default (`${VAR}`) — it is rejected; `${VAR:-default}` is fine.
+- If `instruction.md` spoon-feeds the answer, expected value, model choice, or
+  reference procedure, remove that leakage while retaining the scientific
+  context, objective, inputs, necessary definitions, constraints, and
+  deliverables.
+- If tests enforce a hidden material requirement or one method, simplify them
+  to execute the output and verify the shared scientific outcome or essential
+  invariants. Accept reasonable alternative methods and representations.
+- If a genuinely required outcome is absent from the instruction, state that
+  outcome clearly without adding a step-by-step recipe. If a conventional
+  detail is inferable, leave it to the agent rather than prescribing it.
 
-The submission service also runs its own LLM validators — task clarity,
-resource availability, rubric clarity/discriminability/relevance/robustness, and
-a pass@k difficulty check. Anticipate them: an ambiguous instruction, a rubric
-that no longer matches the prompt, or a verifier calibrated too leniently or too
-strictly will be caught there even if the local scorecard passes.
-
-## Docker access for deployment-gate evidence
-
-When run through `scripts/run-task-review.sh` with Codex, the wrapper's
-default `--docker-access auto` mode uses Codex's `danger-full-access` sandbox
-so the review can inspect an already configured local Docker daemon. Make it
-explicit with:
-
-```bash
-./scripts/run-task-review.sh task --docker-access on
-```
-
-Use `--docker-access off` for a static-only review. Full access is a broad
-local permission for a trusted checkout; it does not repair the daemon, change
-socket permissions, or authorize an unapproved remote context. Before marking
-Docker evidence unavailable, inspect `docker context show`, `docker context ls`,
-`docker info`, and `DOCKER_HOST`. Use a reachable, already configured context
-explicitly when appropriate. If all approved contexts are denied, continue
-the review and mark image architecture/size evidence **UNVERIFIED**; do not
-claim a pass from Dockerfile text or weaken the offline policy.
+Docker may be inspected when it is useful evidence for a rubric criterion such
+as resource configuration, environment hygiene, or reproducibility. If Docker
+evidence is unavailable, explain that limitation in the relevant row; do not
+create a separate deployment verdict.
 
 ## Inputs
 
-- **Rubric**: `task_implemention.toml` at the repo root. It contains `[[criteria]]` entries; each has `name`, `description`, and `guidance`. Treat the `guidance` block as the authoritative grading rule for that criterion — read it before scoring.
+- **Rubric**: `task_implementation.toml` at the repo root. This checkout may
+  still use the historical spelling `task_implemention.toml`; if the corrected
+  name is absent, read that legacy file. Use the one rubric file that exists,
+  and read every `[[criteria]]` entry (`name`, `description`, and `guidance`).
 - **Target**: a Harbor task folder, normally under `task/`. Expected layout:
   - `task.toml`
   - `instruction.md`
@@ -114,51 +67,66 @@ If the folder doesn't have this layout, stop and report what's missing — do no
 
 ## Procedure
 
-1. **Load the rubric.** Read `task_implemention.toml` fully and list every criterion `name` in order. Do not skip any. If a new criterion is added to the file, you score it too — never hardcode the list.
+1. **Load the rubric.** Read the rubric file identified in Inputs fully and list
+   every criterion `name` in order. Do not skip any. If a new criterion is
+   added, score it too — never hardcode the list.
 2. **Survey the task.** Read, at minimum:
    - `task.toml` (metadata, timeouts, resources)
    - `instruction.md` (the contract presented to the agent)
    - `solution/solve.sh` and the script(s) it invokes (`solve.py`, etc.)
-   - `solution/process.md` describing the steps a solver would take to solve the problem
+   - `solution/process.md` if present, referenced, or needed to understand the
+     solution workflow
    - `tests/test.sh` and the verifier (`test_outputs.py`, etc.)
    - `environment/Dockerfile` and a directory listing of `environment/`
    - any recent oracle logs for this task under `jobs/oracle-batch/` if they
      already exist
    - `README.md` if present
    Read whole files when they're small enough; for larger files, read the sections needed to evaluate each criterion. Do not delegate this to a subagent if you can read the files directly — you need the contents in scope to cite line numbers.
-3. **Require `solution/process.md`.** Confirm `solution/process.md` exists and lists the steps a solver would take to solve the problem. If it is missing, empty, or only says to run the reference solution, fail `instruction_minimality` and any relevant reviewability/solution-quality criterion with evidence. The process file should explain the intended scientific/computational workflow without hardcoding hidden answers.
-4. **Check practitioner plausibility.** Before scoring the scientific criteria, identify the real practitioner who would plausibly do this work, the setting where they would do it, the decision the workflow supports, and whether the task's sequence of inputs, computations, validation, and outputs matches that real workflow. Use `instruction.md`, `solution/process.md`, `README.md`, task metadata, and the actual solution/verifier behavior as evidence. If the workflow is only research-flavored, synthetic busywork, a disguised coding/schema exercise, or not something a practitioner would reasonably be paid to do, fail the relevant `scientifically_grounded`, `difficult`, `agentic`, `essential_difficulty`, `expert_time_estimate`, and/or `reviewable` criteria with concrete evidence.
+3. **Compare contract and verifier.** For each material test assertion, ask
+   whether the requested outcome is visible in `instruction.md`. Check both
+   directions: do the tests verify the important deliverables, and do they
+   introduce any material requirement that a reasonable researcher could not
+   infer? Do not treat a private fixture, recomputation, ordinary tolerance,
+   or conventional serialization as hidden by itself.
+4. **Consider the real workflow.** For scientific criteria, identify the likely
+   researcher, setting, decision, and meaningful judgment from the task files.
+   Use that context as evidence for the rubric criterion, but do not create a
+   separate practitioner score or fail a task merely because its data are
+   synthetic or its analysis has one coherent method.
 5. **Score each criterion.** For each rubric entry, decide one of:
    - `PASS` — meets the guidance.
-   - `FAIL` — violates the guidance. Quote the specific guidance clause it violates.
+   - `FAIL` — clearly violates the guidance in a material way. Quote the
+     relevant guidance clause and explain the smallest useful fix.
    - `N/A` — only when the guidance explicitly permits N/A (e.g. `structured_data_schema` when no structured output is expected, `task_readme` when no README is present).
-   Mark `UNKNOWN` only if you genuinely could not read a required file; never use `UNKNOWN` to avoid a judgment call.
-6. **Evidence.** Every verdict needs at least one citation in `path/to/file:line` form. For `FAIL`, also include a one-sentence fix suggestion. For `PASS`, a brief justification (1 sentence) is enough.
-7. **Write the scorecard.** Use the format below. Start the report with
-   `**Status:** PASS` only when every required criterion and client deployment
-   gate passes; otherwise start it with `**Status:** FAIL`. Produce the complete
-   scorecard in Markdown, display the pass/fail summary, and identify the
-   scorecard file when running outside the project wrapper. When run through
-   `scripts/run-task-review.sh`, the wrapper saves the Markdown result as
-   `skill-reports/task-review.md`. The final response must contain the complete
-   scorecard, not only a short summary or a path to a file. Keep the final
-   response's `## Practitioner plausibility`, `## Verdicts`, `## Top fixes`, and
-   `## Out of scope / N/A` sections together; the wrapper retains that final
-   review section in the saved report.
+   Do not add `UNKNOWN`, deployment gates, or extra criteria. If evidence is
+   unavailable, state that limitation in the relevant Notes cell and do not
+   claim a failure that the available evidence does not support.
+6. **Cite evidence.** Every verdict needs at least one citation in
+   `path/to/file:line` form. For `FAIL`, include a one-sentence fix suggestion.
+   For `PASS`, a brief justification is enough.
+7. **Write the scorecard.** Start with `**Status:** PASS` when no rubric
+   criterion is `FAIL`; otherwise start with `**Status:** FAIL`. Report the
+   total number of criteria and separate PASS, FAIL, and N/A counts. Produce
+   the complete scorecard in Markdown, not only a summary or a file path. The
+   wrapper saves it as `skill-reports/task-review.md`.
 
 ## Scorecard format
 
 ```
 # Task review: <task-folder-path>
 
-**Summary:** <pass>/<total non-N/A> criteria pass. <one-line gestalt>.
+**Status:** <PASS|FAIL>
+
+**Total:** <N> criteria reviewed — PASS: <P> | FAIL: <F> | N/A: <A>.
+
+**Summary:** <one-line assessment of the task against the rubric>.
 
 ## Verdicts
 
 | # | Criterion | Verdict | Evidence | Notes |
 |---|-----------|---------|----------|-------|
 | 1 | verifiable | PASS | tests/test_outputs.py:14-260 | Deterministic numeric tolerances, no LLM judge. |
-| 2 | well_specified | FAIL | instruction.md:20 | "reasonable threshold" is subjective; spec the constant. |
+| 2 | well_specified | FAIL | tests/test_outputs.py:42 | The verifier requires an outcome not stated in the instruction; expose the outcome or simplify the assertion. |
 | ...
 
 ## Top fixes (ordered by impact)
@@ -172,37 +140,60 @@ If the folder doesn't have this layout, stop and report what's missing — do no
 - `structured_data_schema` — N/A: ...
 ```
 
-Keep the table rows one line each where possible; spill into "Notes" only when needed. The Top fixes list should call out the 3–7 most consequential failures so the author knows where to start.
+Keep the table rows one line each where possible; spill into "Notes" only when
+needed. The Top fixes list should call out the 3–7 most consequential failures
+so the author knows where to start. If there are no failures, write
+`No fixes required.` Do not add deployment-gate rows or a separate holistic
+score.
 
-## Scoring guidance per-criterion (rules of thumb)
+## Applying the criteria
 
-These are reminders, not overrides — the `guidance` text in `task_implemention.toml` is authoritative.
+Treat each criterion's `guidance` as the intended standard, but apply its
+examples and rough guides proportionately. A criterion is not a license to add
+hidden implementation requirements. Mark `FAIL` only when the evidence shows a
+clear, material violation; otherwise give credit for a natural, solvable task.
 
-- **verifiable / functional_verification**: check that `tests/test_outputs.py` actually executes the agent's output and asserts numerical / structural facts, not that it greps source files. If it uses LLM-as-a-judge, fail. Prefer a verifier that recomputes the expected result from a private fixture under `tests/data/`; FAIL a verifier that only compares against constants pasted into the test file. FAIL any test that grades prose — word counts, required keywords, headings, or tone — since a report can say the right words for the wrong reasons.
-- **well_specified / test_instruction_alignment / structured_data_schema**: cross-check the verifier's material requirements against the public instruction, but judge them at the level of scientific outcomes. PASS when the prompt states the goal, inputs, important constraints, and deliverables and a reasonable researcher can infer a defensible method. Do not require the instruction to spell out every implementation detail, solver tolerance, integration method, uncertainty algorithm, or conventional serialization choice. FAIL only when a test enforces a hidden material requirement, contradicts the prompt, rejects scientifically valid methods, or makes a required outcome non-inferable. A private fixture, independent recomputation, or numerical tolerance is not itself a failure. Flag an instruction clause with no test only when it is a substantive promised outcome, not when it is explanatory context.
-- **solvable / solution_quality / reviewable**: read `solve.sh`, every script it invokes, and `solution/process.md`. The solution must derive the answer (not `echo` it); scripts > 20 lines should live in their own files, not heredocs. `process.md` must list the intended solving steps clearly enough for reviewers to understand the workflow.
-- **outcome_verified**: instruction should describe the end state and decision, not enforce specific tools or one scientific procedure. The verifier should validate common outcomes such as predictive accuracy, physical constraints, uncertainty quality, or schema fields that the prompt actually requests. Do not penalize a task because two valid methods produce slightly different but scientifically acceptable intermediate quantities.
-- **anti_cheat_robustness / task_security**: scan the solution and environment for hardcoded answers, files copied into the runtime image that contain expected outputs, or any obfuscated / network-exfil code.
-- **deterministic_reproducible**: check whether the task is hermetic enough to grade reproducibly, is air-gapped (`network_mode = "no-network"` or absent, never `allow_internet = true`), and has no live-service dependency. The reference solution must derive its result rather than store it, must seed anything stochastic, and must read paths from the six canonical variables — `WORKSPACE_DIR`, `DATA_DIR`, `OUTPUT_DIR`, `SOLUTION_DIR`, `TESTS_DIR`, `LOG_DIR` — instead of hardcoding them or inventing a per-artifact variable. Leave concrete vendoring/dependency repair steps to `task-fixer`.
-- **resource_configuration / expert_time_estimate**: the whole workflow, Oracle included, has to finish inside the fixed one-hour sandbox timeout; flag a solution whose runtime plausibly exceeds it. `expert_time_estimate_hours` describes the human expert, not the machine, and should be non-zero and plausible.
-- **Authored-in-the-author's-voice fields**: `instruction.md`, the task description, the three explanation fields, and the expert time estimate are hand-written by the author. Judge them on substance; do not offer to rewrite them, and treat an explanation that reads as generated boilerplate as evidence for the relevant explanation-quality criterion.
-- **essential_difficulty**: the failure modes the verifier flags should be scientific, not clerical (units, JSON key spelling, file path typos).
-- **difficulty_explanation_quality / solution_explanation_quality / verification_explanation_quality**: read the three `[metadata]` fields in `task.toml`. Empty strings, single sentences, or "this task is hard" → FAIL. Verification explanation must justify any inequality bounds / tolerances.
-- **category_and_tags / task_name / task_toml_schema**: validate `task.toml` metadata against the rubric and Harbor schema at a review level
-- **instruction_clarity**: the prompt should specify goals, inputs, meaningful scientific constraints, and the output needed for the decision without becoming a step-by-step protocol. Allow a researcher to make reasonable choices about methods and routine output details. Flag instructions that reveal the expected answer or prescribe an algorithm so tightly that the task becomes translation rather than analysis.
-- **instruction_minimality**: check that `instruction.md` uses only Markdown that materially improves readability, avoids decorative structure and implementation checklists, and keeps reference workflow details in `solution/process.md`. "Spoonfeeding" means revealing the expected answer or dictating the solution procedure; it does not mean stating necessary equations, candidate alternatives, units, decision criteria, or a clear output contract. Do not fail a prompt merely because it is explicit about the scientific problem.
-- **novel / agentic / scientifically_grounded / difficult / reviewable**: judgment calls — be honest. A textbook exercise dressed up as a benchmark is still a textbook exercise; a task that only requires translating English into Python/NumPy should fail these criteria even if it is numerically complex.
-
-## Client feedback checks
-
-Apply these checks while scoring `instruction_clarity`, `instruction_minimality`, `agentic`, `difficult`, `scientifically_grounded`, `essential_difficulty`, and `expert_time_estimate`. Cite concrete evidence from `instruction.md`, `task.toml`, solution files, and trajectories/logs when available.
-
-- **Real research workflow**: PASS when the task resembles a genuine multi-step domain workflow that would plausibly take an expert 4+ hours. Synthetic or fixed datasets are acceptable when they stand in for a real measurement or study and support a plausible decision. The difficulty should come from scientific ambiguity, approach selection, interpretation, and validation — not from data-cleaning traps, long schemas, or reading-comprehension burden.
-- **Practitioner plausibility**: Name the likely practitioner role in the notes for at least one relevant verdict, such as "materials informatics scientist", "computational biologist", "microscopist", "clinical data scientist", or "process engineer". PASS only if that practitioner would plausibly perform this workflow in a real lab, company, field study, or analysis setting to support a concrete decision. FAIL when the task is clearly a synthetic story around arbitrary transformations, when the workflow clearly omits the validation or domain artifacts a practitioner would need, when no realistic stakeholder would care about the output, or when the work is just translating a prescribed recipe into code.
-- **Workflow fidelity**: Compare `solution/process.md` and the verifier's checked outputs against the claimed research workflow. The workflow should include realistic inputs, intermediate decisions, uncertainty or quality checks, and outputs a practitioner would actually use. Penalize tasks whose process file or tests reveal that the "science" is just row counts, hardcoded constants, formatting, or schema conformance.
-- **No step-by-step lab protocol**: FAIL when `instruction.md` gives the model an answer or an algorithmic recipe so complete that meaningful analysis is eliminated. Necessary domain equations, candidate model definitions, units, thresholds for the stated decision, and structured-output requirements are not spoonfeeding by themselves. Good tasks state the scientific objective, available data, constraints, and evaluation target while leaving meaningful method choices to the agent.
-- **Heterogeneous tool orchestration**: assess whether the task uses the tools or computational modes appropriate to its domain; do not make a 3–4-tool rule a universal failure condition. Multiple libraries serving one local numerical analysis can still be a substantial scientific task when the agent must choose and validate the analysis. Reserve a negative judgment for tasks whose work is merely clerical or mechanical.
-- **Intermediate decision-making**: look for a meaningful scientific judgment where the task calls for one, such as comparing plausible models or interpreting uncertainty. Do not require multiple external tools or elaborate branching when the stated research workflow reasonably consists of one coherent analysis.
+- **Verifiable and functional verification**: Prefer tests that execute the
+  agent's output and check concrete scientific results or invariants. Reject
+  source-keyword checks, subjective prose grading, and brittle reference-only
+  comparisons. Private reference fixtures and independently recomputed values
+  are fine when they check an outcome the instruction asks for.
+- **Well specified, aligned, and structured output**: Require the goal,
+  relevant inputs, material constraints, and deliverables to be understandable
+  to a reasonable researcher. Every material pass/fail assertion should map to
+  an outcome in the instruction, but do not require the prompt to spell out a
+  solver tolerance, integration routine, uncertainty algorithm, library, or
+  routine serialization choice. If a test forces one method, hidden value, or
+  non-inferable field, fail the relevant criterion and suggest simplifying the
+  test or stating the needed outcome explicitly.
+- **Solvable, solution quality, and reviewability**: Confirm that the supplied
+  solution genuinely derives the result, dependencies and data are available,
+  and the files give enough scientific context to understand the work. Do not
+  invent a required process file or other artifact unless the criterion or task
+  explicitly calls for it.
+- **Outcome verification**: Grade the end state and decision, not the route.
+  Accept scientifically defensible alternatives whose intermediate values
+  differ within the task's legitimate variation.
+- **Determinism, hygiene, security, and anti-cheating**: Check the concrete
+  criterion requirements, including reproducibility, dependency behavior,
+  runtime-image boundaries, hardcoded answers, malicious code, and obvious
+  shortcuts. Keep security findings strict, but do not turn normal scientific
+  implementation choices into security findings.
+- **Difficulty, novelty, agentic work, and scientific grounding**: Ask whether
+  a real researcher could plausibly give this prompt to an agent and use the
+  result. Credit meaningful domain judgment, interpretation, validation, and
+  iteration. Do not require a particular number of tools, branches, or a
+  fabricated level of complexity; do fail textbook, clerical, or purely
+  mechanical tasks when the criterion clearly calls for more.
+- **Instruction clarity and minimality**: Keep the prompt natural, concise, and
+  fair. Necessary domain facts, equations, candidate definitions, units,
+  decision criteria, and output requirements are not spoonfeeding. Remove the
+  expected answer and reference-solution recipe, but do not punish an agent for
+  having to make a reasonable guess about method or routine output details.
+- **Metadata, resources, explanations, names, and optional README**: Check the
+  specific rubric language and judge whether the values are plausible and
+  useful. Treat optional material as N/A when the rubric permits it; do not add
+  deployment policies or requirements from outside the rubric.
 
 ## What to do, not do
 
@@ -213,5 +204,6 @@ Apply these checks while scoring `instruction_clarity`, `instruction_minimality`
 - **Do not** leave Docker containers or task-test images behind if the user
   explicitly asks for Docker validation during review. Clean up every container
   and image you create, including failed runs.
-- **Do not** invent criteria. Score exactly what's in `task_implemention.toml`.
+- **Do not** invent criteria or deployment gates. Score exactly what's in the
+  selected repository rubric file.
 - **Do not** offer to "rewrite the instruction" unsolicited. If the user asks for fixes after the scorecard, that's a separate request.
