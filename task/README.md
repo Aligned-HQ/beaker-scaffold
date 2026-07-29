@@ -56,6 +56,17 @@ python3 scripts/validate_scaffold.py
 ./harbor_runner.py task --no-remote --smoke-test
 ```
 
+For a fast authoring check with an already-installed host agent, run one local
+trial without Workbench or Modal:
+
+```bash
+./harbor_runner.py task --quick --quick-agent codex   # or claude
+```
+
+Quick evidence is kept under `harbor-jobs/` and
+`trajectories/quick/<run-id>/`; it is separate from the three-agent campaign
+archive.
+
 To verify the vendored verifier dependencies without an index:
 
 ```bash

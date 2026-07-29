@@ -26,3 +26,6 @@ finished. A zero reward caused by a missing artifact, Docker/build problem,
 missing dependency, permissions issue, hidden schema, undisclosed threshold,
 brittle tolerance, or missing reward file is evidence that the task needs
 repair; it is not evidence of a scientific agent failure.
+
+The runner's `--quick` host-local checks, when archived, live under
+`trajectories/quick/<run-id>/` and are not part of the three-agent campaign.

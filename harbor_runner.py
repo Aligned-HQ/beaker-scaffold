@@ -10,7 +10,10 @@ is resumable via `harbor jobs resume` and every attempt for an agent lives in a
 single job for easy pass@k aggregation.
 
 Workbench remote mode is the default execution path; use `--no-remote` for a
-local Modal run. Preflight requires explicit
+local Modal run. `--quick` is a separate host-local smoke trial: it invokes an
+already-installed `claude` or `codex` executable once, verifies the resulting
+output in a local Docker container, and never contacts Workbench or Modal.
+Preflight requires explicit
 `FROM --platform=linux/amd64` declarations in task Dockerfiles and rejects
 prebuilt image manifests that are not a single Linux/amd64 image. The source
 task must declare `[environment].network_mode = "no-network"`; normal runs
@@ -29,6 +32,12 @@ Examples:
 
     # Preview the local Harbor commands without running them:
     ./harbor_runner.py ./task --no-remote --dry-run
+
+    # Run one local trial with the installed Codex CLI (no Workbench or Modal):
+    ./harbor_runner.py ./task --quick --quick-agent codex
+
+    # Let quick mode choose an installed CLI (Codex is preferred, then Claude):
+    ./harbor_runner.py ./task --quick
 
     # Resume an interrupted run (reuse the printed --run-id):
     ./harbor_runner.py ./task --run-id 20260528-101500-a1b2c3d4e5 --resume
@@ -54,6 +63,7 @@ import concurrent.futures
 import hashlib
 import io
 import json
+import math
 import os
 import posixpath
 import re
@@ -146,6 +156,9 @@ DEFAULT_CONCURRENCY = 1
 MODAL_PLATFORM = "linux/amd64"
 MODAL_APP_NAME_PREFIX = "beaker"
 MODAL_RUN_MANIFEST_SUFFIX = ".modal-run.json"
+QUICK_AGENT_CHOICES = ("auto", "claude", "claude-code", "codex")
+QUICK_DEFAULT_AGENT_TIMEOUT_SEC = 1800.0
+QUICK_DEFAULT_VERIFIER_TIMEOUT_SEC = 300.0
 DOCKERFILE_FROM_RE = re.compile(
     r"^\s*FROM(?:\s+--platform=(?P<platform>\S+))?\s+(?P<image>\S+)",
     re.IGNORECASE,
@@ -282,6 +295,17 @@ class JobResult:
 
 
 @dataclass(frozen=True)
+class QuickTrialPaths:
+    """Paths for one host-local trial and its staged public workspace."""
+
+    job_name: str
+    job_dir: Path
+    trial_dir: Path
+    workspace_dir: Path
+    runner_log: Path
+
+
+@dataclass(frozen=True)
 class JobProgress:
     expected_trials: int
     result_files: int
@@ -409,6 +433,28 @@ def _parse_dotenv_value(raw: str, *, path: Path, line_number: int) -> str:
     return value[:comment_start].rstrip() if comment_start >= 0 else value
 
 
+def read_dotenv_values(path: Path) -> dict[str, str]:
+    """Read the small, dependency-free .env syntax used by the runner."""
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SystemExit(f"error: cannot read env file {path}: {exc}") from exc
+
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, raw_value = line.partition("=")
+        key = key.strip()
+        if not separator or not DOTENV_KEY_RE.fullmatch(key):
+            raise SystemExit(f"error: invalid .env assignment in {path}:{line_number}")
+        values[key] = _parse_dotenv_value(raw_value, path=path, line_number=line_number)
+    return values
+
+
 def load_dotenv(path: Path | None = None) -> Path | None:
     """Load a local .env file without overwriting explicitly exported values."""
     candidates: list[Path] = []
@@ -425,18 +471,9 @@ def load_dotenv(path: Path | None = None) -> Path | None:
     if env_path is None:
         return None
 
-    for line_number, raw_line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        key, separator, raw_value = line.partition("=")
-        key = key.strip()
-        if not separator or not DOTENV_KEY_RE.fullmatch(key):
-            raise SystemExit(f"error: invalid .env assignment in {env_path}:{line_number}")
+    for key, value in read_dotenv_values(env_path).items():
         if key not in os.environ:
-            os.environ[key] = _parse_dotenv_value(raw_value, path=env_path, line_number=line_number)
+            os.environ[key] = value
     return env_path
 
 
@@ -2814,6 +2851,723 @@ def run_local_smoke(task_root: Path, args: argparse.Namespace) -> int:
     return summarize_smoke(logs_dir, container_exit, time.time() - started)
 
 
+def resolve_quick_agent(requested: str) -> tuple[str, str]:
+    """Resolve the host CLI used by ``--quick`` without installing anything."""
+    aliases = {
+        "claude-code": "claude",
+        "claude": "claude",
+        "codex": "codex",
+    }
+    normalized = requested.strip().lower()
+    if normalized == "auto":
+        # Match the local skill wrappers: Codex is preferred when both are
+        # installed, but an explicit --quick-agent remains available.
+        candidates = ("codex", "claude")
+    else:
+        canonical = aliases.get(normalized)
+        if canonical is None:
+            choices = ", ".join(QUICK_AGENT_CHOICES)
+            raise SystemExit(
+                f"error: --quick-agent must be one of {choices}; got {requested!r}"
+            )
+        candidates = (canonical,)
+
+    for candidate in candidates:
+        executable = shutil.which(candidate)
+        if executable is not None:
+            return candidate, executable
+
+    if normalized == "auto":
+        raise SystemExit(
+            "error: --quick needs an installed local agent CLI; "
+            "install Codex (`codex`) or Claude Code (`claude`) and authenticate it first"
+        )
+    candidate = candidates[0]
+    raise SystemExit(
+        f"error: --quick-agent {candidate!r} is not installed on PATH; "
+        f"install or authenticate `{candidate}` first"
+    )
+
+
+def quick_trial_paths(
+    jobs_dir: Path,
+    run_id: str,
+    agent: str,
+) -> QuickTrialPaths:
+    """Return isolated, non-destructive paths for a quick trial."""
+    jobs_dir = jobs_dir.expanduser().resolve()
+    job_name = slug(f"{run_id}-quick-{agent}")
+    job_dir = jobs_dir / job_name
+    trial_name = f"{run_id}.agent__{agent}"
+    trial_dir = job_dir / trial_name
+    return QuickTrialPaths(
+        job_name=job_name,
+        job_dir=job_dir,
+        trial_dir=trial_dir,
+        workspace_dir=job_dir / "workspace",
+        runner_log=jobs_dir / f"{job_name}.runner.log",
+    )
+
+
+def quick_agent_prompt(workspace_dir: Path) -> str:
+    """Explain the host-path mapping that replaces Harbor's /workspace mount."""
+    workspace = str(workspace_dir.resolve())
+    return (
+        "Solve the Harbor task in this local quick trial. Read the task contract "
+        f"at {workspace}/instruction.md, inspect the public inputs under "
+        f"{workspace}/data, and write every required deliverable under "
+        f"{workspace}/output. In the normal Harbor container these paths are "
+        "called /workspace/data and /workspace/output; in this host-local trial "
+        f"use the mapped host directory {workspace} instead and do not use the "
+        "literal /workspace path. Work only inside the mapped workspace, do not "
+        "look for solution or verifier files, and do not stop until the requested "
+        "output files are present."
+    )
+
+
+def build_quick_agent_command(
+    agent: str,
+    executable: str,
+    workspace_dir: Path,
+    prompt: str,
+) -> list[str]:
+    """Build a non-interactive command for the already-installed host CLI."""
+    workspace = str(workspace_dir.resolve())
+    if agent == "codex":
+        return [
+            executable,
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "-C",
+            workspace,
+            "--sandbox",
+            "workspace-write",
+            "--skip-git-repo-check",
+            prompt,
+        ]
+    if agent == "claude":
+        return [
+            executable,
+            "--print",
+            "--no-session-persistence",
+            "--permission-mode",
+            "bypassPermissions",
+            "--allow-dangerously-skip-permissions",
+            "--add-dir",
+            workspace,
+            "--",
+            prompt,
+        ]
+    raise SystemExit(f"error: unsupported quick agent {agent!r}")
+
+
+def load_quick_project(task_root: Path) -> SmokeProject:
+    """Load the public task pieces needed for a host-agent/local-verifier run."""
+    config = load_toml(task_root / "task.toml")
+    environment = config.get("environment", {})
+    if not isinstance(environment, dict):
+        raise SystemExit(f"error: [environment] must be a TOML table: {task_root / 'task.toml'}")
+
+    required = (task_root / "tests" / "test.sh",)
+    missing = [str(path.relative_to(task_root)) for path in required if not path.is_file()]
+    docker_image = environment.get("docker_image")
+    if docker_image is not None and not isinstance(docker_image, str):
+        missing.append("[environment].docker_image must be a string")
+    if not docker_image and not (task_root / "environment" / "Dockerfile").is_file():
+        missing.append("environment/Dockerfile or [environment].docker_image")
+    if missing:
+        raise SystemExit(
+            f"error: {task_root} is missing quick-mode files: {', '.join(missing)}"
+        )
+
+    task_config = config.get("task")
+    name = task_config.get("name") if isinstance(task_config, dict) else None
+    return SmokeProject(root=task_root.resolve(), name=str(name or task_root.name))
+
+
+def stage_quick_workspace(task_root: Path, workspace_dir: Path) -> None:
+    """Stage only the task contract and public runtime inputs for the host CLI."""
+    if workspace_dir.exists():
+        raise SystemExit(f"error: quick workspace already exists: {workspace_dir}")
+    workspace_dir.mkdir(parents=True, exist_ok=False)
+
+    instruction = task_root / "instruction.md"
+    if not instruction.is_file():
+        raise SystemExit(f"error: task is missing instruction.md: {instruction}")
+    shutil.copy2(instruction, workspace_dir / "instruction.md")
+
+    environment_dir = task_root / "environment"
+    data_dir = environment_dir / "data"
+    if data_dir.is_dir():
+        shutil.copytree(data_dir, workspace_dir / "data", symlinks=True)
+    else:
+        (workspace_dir / "data").mkdir()
+
+    # A Dockerfile's other public runtime files can be useful to an agent, but
+    # the image build recipe and wheelhouse are authoring/runtime metadata. In
+    # particular, never copy solution/ or tests/ into the agent workspace.
+    if environment_dir.is_dir():
+        for child in sorted(environment_dir.iterdir(), key=lambda path: path.name):
+            if child.name in {"Dockerfile", "data", "wheels"}:
+                continue
+            destination = workspace_dir / child.name
+            if child.is_dir():
+                shutil.copytree(child, destination, symlinks=True)
+            elif child.is_file():
+                shutil.copy2(child, destination)
+
+    (workspace_dir / "output").mkdir()
+
+
+def quick_process_environment(args: argparse.Namespace) -> dict[str, str]:
+    """Build the host agent environment without leaking env-file values to logs."""
+    environment = os.environ.copy()
+    for env_file in args.env_file:
+        values = read_dotenv_values(env_file)
+        for key, value in values.items():
+            if key not in os.environ:
+                environment[key] = value
+    for item in args.agent_env:
+        key, value = parse_key_value(item, "--agent-env")
+        environment[key] = value
+    return environment
+
+
+def quick_verifier_environment(args: argparse.Namespace) -> dict[str, str]:
+    """Build only the explicit environment passed to the local verifier."""
+    environment: dict[str, str] = {}
+    for env_file in args.env_file:
+        environment.update(read_dotenv_values(env_file))
+    for item in args.verifier_env:
+        key, value = parse_key_value(item, "--verifier-env")
+        environment[key] = value
+    return environment
+
+
+def quick_timeout_seconds(
+    task_root: Path,
+    section: str,
+    override: float | None,
+    multiplier: float,
+    fallback: float,
+) -> float:
+    if override is not None:
+        timeout = override
+    else:
+        config = load_toml(task_root / "task.toml")
+        section_config = config.get(section, {})
+        configured = section_config.get("timeout_sec") if isinstance(section_config, dict) else None
+        try:
+            timeout = float(configured) if configured is not None else fallback
+        except (TypeError, ValueError):
+            timeout = fallback
+        timeout *= multiplier
+    if timeout <= 0:
+        raise SystemExit(f"error: quick {section} timeout must be positive")
+    return timeout
+
+
+def build_quick_verifier_image(
+    project: SmokeProject,
+    args: argparse.Namespace,
+) -> tuple[str, bool]:
+    """Build or select the local runtime image used by the verifier."""
+    config = load_toml(project.task_toml)
+    environment = config.get("environment", {})
+    configured_image = environment.get("docker_image") if isinstance(environment, dict) else None
+    if configured_image:
+        return str(configured_image), False
+
+    image_tag = getattr(args, "quick_image_tag", None) or (
+        f"comp-quick/{slug(project.name)}-{uuid4().hex[:8]}"
+    )
+    command = [
+        "docker",
+        "build",
+        "--platform",
+        MODAL_PLATFORM,
+        "-t",
+        image_tag,
+    ]
+    if getattr(args, "force_build", False):
+        command.append("--no-cache")
+    command.append(str(project.dockerfile_dir))
+    result = run_smoke_command(command)
+    if result.returncode != 0:
+        raise SystemExit(2)
+    # An explicit tag may refer to an image the user owns already; never remove
+    # it automatically. Generated quick tags are safe to clean up by default.
+    remove_image = not getattr(args, "quick_keep_image", False) and not getattr(
+        args, "quick_image_tag", None
+    )
+    return image_tag, remove_image
+
+
+def run_quick_verifier_container(
+    project: SmokeProject,
+    image_tag: str,
+    trial: QuickTrialPaths,
+    args: argparse.Namespace,
+    timeout_sec: float,
+) -> int:
+    """Run the verifier locally with no network and no Modal involvement."""
+    logs_dir = trial.trial_dir / "verifier"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    container_name = f"comp-quick-{uuid4().hex[:12]}"
+    command = [
+        "docker",
+        "run",
+        "--platform",
+        MODAL_PLATFORM,
+        "--network",
+        "none",
+        "--name",
+        container_name,
+        "-v",
+        f"{trial.workspace_dir / 'output'}:/workspace/output",
+        "-v",
+        f"{project.tests_dir}:/tests:ro",
+        "-v",
+        f"{trial.trial_dir}:/logs",
+    ]
+    for key, value in quick_verifier_environment(args).items():
+        command.extend(["-e", f"{key}={value}"])
+    command.extend([image_tag, "bash", "-c", "bash /tests/test.sh"])
+
+    try:
+        print(f"quick verifier timeout: {timeout_sec:.1f}s", flush=True)
+        completed = subprocess.run(
+            command,
+            timeout=timeout_sec,
+            check=False,
+        )
+        return completed.returncode
+    except subprocess.TimeoutExpired:
+        print("quick verifier timed out; stopping its local container", file=sys.stderr, flush=True)
+        return 124
+    finally:
+        if not getattr(args, "quick_keep_container", False):
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            print(f"(container retained: {container_name})", flush=True)
+
+
+def read_quick_reward(path: Path) -> float | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        reward = float(raw)
+    except (OSError, ValueError):
+        return None
+    return reward if math.isfinite(reward) else None
+
+
+def write_quick_trial_result(
+    *,
+    trial: QuickTrialPaths,
+    task_root: Path,
+    agent: str,
+    started_at: str,
+    finished_at: str | None,
+    agent_returncode: int,
+    verifier_returncode: int | None,
+    reward: float | None,
+    exception: tuple[str, str] | None,
+) -> Path:
+    payload: dict[str, object] = {
+        "task_id": {"path": str(task_root.resolve())},
+        "trial_id": trial.trial_dir.name,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "agent": {"name": agent, "model": "configured-local"},
+        "agent_returncode": agent_returncode,
+        "verifier_returncode": verifier_returncode,
+        "verifier_result": {
+            "rewards": {"reward": reward},
+            "returncode": verifier_returncode,
+        },
+    }
+    if exception is not None:
+        exception_type_name, message = exception
+        payload["exception_info"] = {
+            "exception_type": exception_type_name,
+            "message": message,
+        }
+
+    result_path = trial.trial_dir / "result.json"
+    result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return result_path
+
+
+def write_quick_markdown_summary(
+    *,
+    jobs_dir: Path,
+    task_root: Path,
+    result: JobResult,
+    reward: float | None,
+    exception: str | None,
+    run_id: str,
+) -> Path:
+    summary_path = jobs_dir / f"{run_id}.quick-summary.md"
+    status = "pass" if result.returncode == 0 and reward is not None and reward > 0 else "fail"
+    if exception:
+        status = f"error ({exception})"
+    lines = [
+        f"# Harbor Quick Trial Summary: {run_id}",
+        "",
+        f"- Updated: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
+        f"- Task: `{task_root.name}`",
+        f"- Agent: `{result.agent}` (configured local CLI)",
+        f"- Trial: `{result.job_name}`",
+        "",
+        "| Task | Agent | Reward | Status |",
+        "| --- | --- | ---: | --- |",
+        f"| {markdown_escape(task_root.name)} | {markdown_escape(result.agent)} | "
+        f"{format_metric(reward)} | {markdown_escape(status)} |",
+        "",
+        f"Evidence: `{result.job_dir}`",
+    ]
+    summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return summary_path
+
+
+def archive_quick_trial(
+    *,
+    trial: QuickTrialPaths,
+    agent: str,
+    destination_root: Path,
+    run_id: str,
+    summary_path: Path,
+    markdown_summary_path: Path,
+) -> Path:
+    """Keep quick evidence under a namespaced archive, not campaign agent dirs."""
+    archive_root = destination_root.expanduser().resolve() / "quick" / run_id
+    if archive_root.exists():
+        raise SystemExit(f"error: quick trajectory archive already exists: {archive_root}")
+    destination = archive_root / slug(agent) / trial.trial_dir.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(trial.trial_dir, destination, symlinks=True)
+    copy_file_if_exists(summary_path, archive_root / summary_path.name)
+    copy_file_if_exists(markdown_summary_path, archive_root / "summary.md")
+    return archive_root
+
+
+def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
+    """Run one host-installed agent CLI and one local verifier trial."""
+    if args.run:
+        raise SystemExit("error: --quick cannot be combined with --run; choose --quick-agent")
+    incompatible = {
+        "--resume": args.resume,
+        "--archive-only": args.archive_only,
+        "--oracle-sort": args.oracle_sort,
+        "--smoke-test": args.smoke_test,
+        "--modal-secret": args.modal_secret,
+        "--environment-kwarg": args.environment_kwarg,
+        "--agent-kwarg": args.agent_kwarg,
+        "--artifact": args.artifact,
+        "--no-delete": args.no_delete,
+        "--smoke-env": args.smoke_env,
+        "--smoke-env-file": args.smoke_env_file,
+    }
+    used = [flag for flag, value in incompatible.items() if value]
+    if used:
+        raise SystemExit(
+            "error: --quick cannot be combined with " + ", ".join(used)
+        )
+    for env_file in args.env_file:
+        if not env_file.is_file():
+            raise SystemExit(f"error: --env-file does not exist: {env_file}")
+    for item in args.agent_env:
+        parse_key_value(item, "--agent-env")
+    for item in args.verifier_env:
+        parse_key_value(item, "--verifier-env")
+    if args.quick_timeout_sec is not None and args.quick_timeout_sec <= 0:
+        raise SystemExit("error: --quick-timeout-sec must be positive")
+
+    agent, executable = resolve_quick_agent(args.quick_agent)
+    project = load_quick_project(task_root)
+    trial = quick_trial_paths(args.jobs_dir, args.run_id, agent)
+    if trial.job_dir.exists() and not args.dry_run:
+        raise SystemExit(
+            f"error: quick job already exists: {trial.job_dir}; choose a new --run-id"
+        )
+    prompt = quick_agent_prompt(trial.workspace_dir)
+    agent_command = build_quick_agent_command(
+        agent,
+        executable,
+        trial.workspace_dir,
+        prompt,
+    )
+    project_config = load_toml(project.task_toml)
+    project_environment = project_config.get("environment", {})
+    configured_image = (
+        project_environment.get("docker_image")
+        if isinstance(project_environment, dict)
+        else None
+    )
+    image_description = (
+        "[environment].docker_image"
+        if configured_image
+        else str(project.dockerfile_dir)
+    )
+    overview = [
+        f"run-id:    {args.run_id}",
+        "action:    quick local single trial",
+        f"agent:     {agent} ({executable})",
+        f"task root: {task_root}",
+        f"workspace: {trial.workspace_dir}",
+        f"verifier:  local Docker ({image_description})",
+        "network:   host agent as configured; verifier container has --network none",
+        f"job:       {trial.job_dir}",
+        f"log:       {trial.runner_log}",
+    ]
+    print_runner_panel("Harbor quick trial", overview)
+    print_runner_panel("Local agent command", [redacted_command(agent_command)], border_style="dim")
+    if args.dry_run:
+        return 0
+
+    require_executable("docker")
+    trial.job_dir.mkdir(parents=True, exist_ok=False)
+    stage_quick_workspace(task_root, trial.workspace_dir)
+    config_payload = {
+        "version": 1,
+        "quick": True,
+        "task": {"path": str(task_root.resolve())},
+        "agents": [{"name": agent, "model": "configured-local"}],
+        "environment": {"type": "host-local-agent-and-docker-verifier"},
+    }
+    (trial.job_dir / "config.json").write_text(
+        json.dumps(config_payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+    agent_timeout = quick_timeout_seconds(
+        task_root,
+        "agent",
+        args.quick_timeout_sec,
+        args.agent_timeout_multiplier,
+        QUICK_DEFAULT_AGENT_TIMEOUT_SEC,
+    )
+    verifier_timeout = quick_timeout_seconds(
+        task_root,
+        "verifier",
+        None,
+        args.timeout_multiplier,
+        QUICK_DEFAULT_VERIFIER_TIMEOUT_SEC,
+    )
+    started_clock = time.time()
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    agent_returncode = 2
+    verifier_returncode: int | None = None
+    exception: tuple[str, str] | None = None
+    interrupted = False
+    image_tag = ""
+    remove_image = False
+
+    try:
+        agent_environment = quick_process_environment(args)
+        # Parse all explicit env inputs before building an image so malformed
+        # configuration cannot leave a generated image behind.
+        quick_verifier_environment(args)
+        image_tag, remove_image = build_quick_verifier_image(project, args)
+        with trial.runner_log.open("w", encoding="utf-8") as log:
+            log.write(f"$ {redacted_command(agent_command)}\n\n")
+            log.write(f"workspace: {trial.workspace_dir}\n")
+            log.write(f"agent timeout: {agent_timeout:.1f}s\n")
+            log.flush()
+            process: subprocess.Popen[str] | None = None
+            try:
+                process = subprocess.Popen(
+                    agent_command,
+                    cwd=trial.workspace_dir,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=agent_environment,
+                )
+                with PROCESS_LOCK:
+                    RUNNING_PROCESSES[trial.job_name] = process
+                try:
+                    agent_returncode = process.wait(timeout=agent_timeout)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    agent_returncode = 124
+                    exception = (
+                        "QuickAgentTimeout",
+                        f"local {agent} CLI exceeded {agent_timeout:.1f}s",
+                    )
+                except KeyboardInterrupt:
+                    interrupted = True
+                    process.terminate()
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    agent_returncode = 130
+            except OSError as exc:
+                exception = ("QuickAgentLaunchError", str(exc))
+                agent_returncode = 127
+            finally:
+                if process is not None:
+                    with PROCESS_LOCK:
+                        RUNNING_PROCESSES.pop(trial.job_name, None)
+            log.write(f"\nagent exit: {agent_returncode}\n")
+            log.flush()
+    finally:
+        transcript_dir = trial.trial_dir / "agent"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        if trial.runner_log.is_file():
+            shutil.copy2(trial.runner_log, transcript_dir / f"{agent}.log")
+
+    if not interrupted:
+        try:
+            verifier_returncode = run_quick_verifier_container(
+                project,
+                image_tag,
+                trial,
+                args,
+                verifier_timeout,
+            )
+        except KeyboardInterrupt:
+            interrupted = True
+            verifier_returncode = 130
+        except (OSError, subprocess.SubprocessError) as exc:
+            verifier_returncode = 2
+            exception = exception or ("QuickVerifierLaunchError", str(exc))
+
+    reward_path = trial.trial_dir / "verifier" / "reward.txt"
+    raw_reward = read_quick_reward(reward_path)
+    if agent_returncode != 0 and exception is None:
+        exception = (
+            "QuickAgentError",
+            f"local {agent} CLI exited with {agent_returncode}",
+        )
+    if (
+        not interrupted
+        and verifier_returncode is not None
+        and not reward_path.is_file()
+        and exception is None
+    ):
+        exception = (
+            "QuickVerifierError",
+            f"verifier exited with {verifier_returncode} without writing reward.txt",
+        )
+    reward = raw_reward if agent_returncode == 0 and not interrupted else 0.0
+    finished_at = None if interrupted else time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    artifacts_dir = trial.trial_dir / "artifacts"
+    output_dir = trial.workspace_dir / "output"
+    if output_dir.is_dir():
+        shutil.copytree(output_dir, artifacts_dir / "output", symlinks=True)
+
+    write_quick_trial_result(
+        trial=trial,
+        task_root=task_root,
+        agent=agent,
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_returncode=agent_returncode,
+        verifier_returncode=verifier_returncode,
+        reward=reward,
+        exception=exception,
+    )
+    trial_log_lines = [
+        f"run_id: {args.run_id}",
+        f"agent: {agent}",
+        f"workspace: {trial.workspace_dir}",
+        f"started_at: {started_at}",
+        f"finished_at: {finished_at}",
+        f"agent_returncode: {agent_returncode}",
+        f"verifier_returncode: {verifier_returncode}",
+        f"reward: {reward}",
+    ]
+    if exception:
+        trial_log_lines.append(f"exception: {exception[0]}: {exception[1]}")
+    (trial.trial_dir / "trial.log").write_text(
+        "\n".join(trial_log_lines) + "\n", encoding="utf-8"
+    )
+
+    if interrupted:
+        result_returncode = 130
+    elif exception is not None:
+        result_returncode = 2
+    elif agent_returncode != 0:
+        result_returncode = agent_returncode or 1
+    elif verifier_returncode != 0:
+        result_returncode = 1
+    elif reward is None or reward <= 0:
+        result_returncode = 1
+    else:
+        result_returncode = 0
+
+    result = JobResult(
+        agent=agent,
+        model="configured-local",
+        label=f"quick-{agent}",
+        job_name=trial.job_name,
+        n_trials_expected=1,
+        returncode=result_returncode,
+        elapsed_sec=round(time.time() - started_clock, 3),
+        job_dir=str(trial.job_dir),
+        runner_log=str(trial.runner_log),
+        resumed=False,
+    )
+    summary_path = write_summary(args.jobs_dir.resolve(), task_root, args.run_id, [result])
+    markdown_summary_path = write_quick_markdown_summary(
+        jobs_dir=args.jobs_dir.resolve(),
+        task_root=task_root,
+        result=result,
+        reward=reward,
+        exception=exception[0] if exception else None,
+        run_id=args.run_id,
+    )
+    (trial.job_dir / "job.log").write_text(
+        trial.runner_log.read_text(encoding="utf-8") if trial.runner_log.is_file() else "",
+        encoding="utf-8",
+    )
+
+    archive_path: Path | None = None
+    try:
+        if args.archive_completed:
+            archive_path = archive_quick_trial(
+                trial=trial,
+                agent=agent,
+                destination_root=args.completed_trajectories_dir,
+                run_id=args.run_id,
+                summary_path=summary_path,
+                markdown_summary_path=markdown_summary_path,
+            )
+    finally:
+        if remove_image and image_tag:
+            subprocess.run(
+                ["docker", "image", "rm", "-f", image_tag],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+
+    status = "PASS" if result_returncode == 0 else ("INTERRUPTED" if interrupted else "FAIL")
+    print()
+    print(f"QUICK RESULT: {status}")
+    print(f"  agent:     {agent}")
+    print(f"  reward:    {reward}")
+    print(f"  evidence:  {trial.trial_dir}")
+    print(f"  summary:   {markdown_summary_path}")
+    if archive_path is not None:
+        print(f"  archive:   {archive_path}")
+    return result_returncode
+
+
 def validate_amd64_dockerfile(path: Path) -> list[str]:
     """Return architecture errors for a Dockerfile used by a Modal task.
 
@@ -3712,7 +4466,11 @@ def cleanup_modal_for_args(args: argparse.Namespace) -> None:
 
 
 def should_shutdown_modal(args: argparse.Namespace) -> bool:
-    return bool(args.shutdown_modal and args.env == "modal")
+    return bool(
+        not getattr(args, "quick", False)
+        and args.shutdown_modal
+        and args.env == "modal"
+    )
 
 
 def run_all(specs: list[JobSpec], local_concurrency: int) -> tuple[list[JobResult], bool]:
@@ -4709,6 +5467,49 @@ def main(argv: list[str]) -> int:
         help="Attempts for this task, passed to harbor --n-attempts (default: 3).",
     )
     parser.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Run exactly one host-local trial with an installed Claude Code or "
+            "Codex CLI, then verify it in local Docker; never contacts Workbench "
+            "or Modal."
+        ),
+    )
+    parser.add_argument(
+        "--quick-agent",
+        "--quick-runner",
+        dest="quick_agent",
+        choices=QUICK_AGENT_CHOICES,
+        default="auto",
+        help=(
+            "Local CLI for --quick: auto, claude, claude-code, or codex "
+            "(default: auto; Codex is preferred when both are installed)."
+        ),
+    )
+    parser.add_argument(
+        "--quick-timeout-sec",
+        type=float,
+        default=None,
+        help=(
+            "Host-agent timeout for --quick; by default use [agent].timeout_sec "
+            "times --agent-timeout-multiplier."
+        ),
+    )
+    parser.add_argument(
+        "--quick-image-tag",
+        help="Choose the local Docker image tag used by --quick.",
+    )
+    parser.add_argument(
+        "--quick-keep-image",
+        action="store_true",
+        help="Keep the local Docker image built for --quick.",
+    )
+    parser.add_argument(
+        "--quick-keep-container",
+        action="store_true",
+        help="Keep the local --quick verifier container for debugging.",
+    )
+    parser.add_argument(
         "--run",
         action="append",
         default=[],
@@ -5076,6 +5877,12 @@ def main(argv: list[str]) -> int:
             parse_key_value(item, "--agent-kwarg")
 
     task_root = resolve_single_task(args.path)
+
+    if args.quick:
+        # Quick mode is intentionally handled before the Modal preflight,
+        # Harbor executable check, snapshots, and run manifest ownership. Its
+        # contract is a host-installed CLI plus a local Docker verifier.
+        return run_quick_trial(task_root, args)
 
     if args.remote:
         if args.smoke_test:

@@ -540,6 +540,28 @@ test runs the verifier script inside the environment image, any dependency it
 needs must be available there. That is also exactly how the Nexus sandbox runs,
 so a passing smoke test is a good predictor of submission behaviour.
 
+### Optional: run one quick local agent trial
+
+Use quick mode when you want to test the task with the Claude Code or Codex CLI
+you already use for the authoring skills. It runs that host executable once,
+stages only `instruction.md` and public runtime inputs into an isolated
+workspace, and verifies the output in a local Docker container with networking
+disabled. It does not run Harbor, contact Workbench, create a Modal app, or
+expose `solution/` and `tests/` to the agent:
+
+```bash
+./harbor_runner.py task --quick --quick-agent codex
+# or let it choose Codex, then Claude Code:
+./harbor_runner.py task --quick
+```
+
+The selected CLI uses its own local login and configured model. The one-trial
+evidence remains in `harbor-jobs/` and, when archiving is enabled, under
+`trajectories/quick/<run-id>/` so it cannot be mistaken for the required
+three-agent campaign. Use `--quick-agent claude` to select Claude Code
+explicitly. `--quick --dry-run` previews the host command without starting
+Docker or the agent.
+
 ## 8. Run the Harbor task runner
 
 `harbor_runner.py` runs this repository's single `task/` directory through an

@@ -1120,6 +1120,150 @@ def check_remote_upload_progress() -> None:
         assert "100.0%" in rendered
 
 
+def make_quick_task(root: Path) -> Path:
+    task = root / "task"
+    (task / "environment" / "data").mkdir(parents=True)
+    (task / "tests").mkdir(parents=True)
+    (task / "solution").mkdir(parents=True)
+    (task / "instruction.md").write_text(
+        "Write result.json under /workspace/output.\n", encoding="utf-8"
+    )
+    (task / "environment" / "data" / "input.txt").write_text("public\n", encoding="utf-8")
+    (task / "environment" / "Dockerfile").write_text(
+        "FROM --platform=linux/amd64 scratch\n", encoding="utf-8"
+    )
+    (task / "tests" / "test.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (task / "tests" / "test_outputs.py").write_text("# fixture verifier\n", encoding="utf-8")
+    (task / "solution" / "secret.txt").write_text("must not be staged\n", encoding="utf-8")
+    (task / "tests" / "secret.txt").write_text("must not be staged\n", encoding="utf-8")
+    (task / "task.toml").write_text(
+        """[task]
+name = "quick-fixture"
+
+[agent]
+timeout_sec = 10
+
+[verifier]
+timeout_sec = 10
+
+[environment]
+network_mode = "no-network"
+""",
+        encoding="utf-8",
+    )
+    return task
+
+
+def check_quick_agent_resolution_and_commands() -> None:
+    original_which = harbor_runner.shutil.which
+    harbor_runner.shutil.which = lambda name: f"/bin/{name}" if name == "claude" else None
+    try:
+        assert harbor_runner.resolve_quick_agent("auto") == ("claude", "/bin/claude")
+        command = harbor_runner.build_quick_agent_command(
+            "claude",
+            "/bin/claude",
+            Path("/tmp/quick-workspace"),
+            "solve it",
+        )
+    finally:
+        harbor_runner.shutil.which = original_which
+    assert command[:7] == [
+        "/bin/claude",
+        "--print",
+        "--no-session-persistence",
+        "--permission-mode",
+        "bypassPermissions",
+        "--allow-dangerously-skip-permissions",
+        "--add-dir",
+    ]
+    assert command[-2:] == ["--", "solve it"]
+
+
+def check_quick_workspace_is_public_only() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-quick-stage-") as raw:
+        task = make_quick_task(Path(raw))
+        workspace = Path(raw) / "workspace"
+        harbor_runner.stage_quick_workspace(task, workspace)
+        assert (workspace / "instruction.md").is_file()
+        assert (workspace / "data" / "input.txt").read_text(encoding="utf-8") == "public\n"
+        assert (workspace / "output").is_dir()
+        assert not (workspace / "solution").exists()
+        assert not (workspace / "tests").exists()
+
+
+def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
+    with tempfile.TemporaryDirectory(prefix="beaker-quick-run-") as raw:
+        root = Path(raw)
+        task = make_quick_task(root)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        fake_claude = bin_dir / "claude"
+        fake_claude.write_text(
+            "#!/bin/sh\n"
+            "mkdir -p \"$PWD/output\"\n"
+            "printf '%s\\n' '{\"ok\": true}' > \"$PWD/output/result.json\"\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_docker = bin_dir / "docker"
+        fake_docker.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "args = sys.argv[1:]\n"
+            "if not args or args[0] in {'build', 'rm', 'image'}:\n"
+            "    raise SystemExit(0)\n"
+            "if args[0] == 'run':\n"
+            "    output = logs = ''\n"
+            "    for index, value in enumerate(args[:-1]):\n"
+            "        if value != '-v':\n"
+            "            continue\n"
+            "        source, target = args[index + 1].rsplit(':', 1)\n"
+            "        if target == '/workspace/output': output = source\n"
+            "        if target == '/logs': logs = source\n"
+            "    os.makedirs(os.path.join(logs, 'verifier'), exist_ok=True)\n"
+            "    reward = '1\\n' if os.path.isfile(os.path.join(output, 'result.json')) else '0\\n'\n"
+            "    with open(os.path.join(logs, 'verifier', 'reward.txt'), 'w') as handle: handle.write(reward)\n"
+            "raise SystemExit(0)\n",
+            encoding="utf-8",
+        )
+        fake_claude.chmod(0o755)
+        fake_docker.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{bin_dir}:{old_path}"
+        jobs_dir = root / "harbor-jobs"
+        trajectories_dir = root / "trajectories"
+        try:
+            returncode = harbor_runner.main(
+                [
+                    str(task),
+                    "--quick",
+                    "--quick-agent",
+                    "claude",
+                    "--quick-timeout-sec",
+                    "30",
+                    "--run-id",
+                    "quick-fixture",
+                    "--jobs-dir",
+                    str(jobs_dir),
+                    "--completed-trajectories-dir",
+                    str(trajectories_dir),
+                ]
+            )
+        finally:
+            os.environ["PATH"] = old_path
+
+        assert returncode == 0
+        assert not list(jobs_dir.glob("*.modal-run.json"))
+        job_dir = jobs_dir / "quick-fixture-quick-claude"
+        trial_dir = job_dir / "quick-fixture.agent__claude"
+        result = json.loads((trial_dir / "result.json").read_text(encoding="utf-8"))
+        assert result["finished_at"]
+        assert result["verifier_result"]["rewards"]["reward"] == 1.0
+        assert (trial_dir / "verifier" / "reward.txt").read_text(encoding="utf-8").strip() == "1"
+        assert (trial_dir / "artifacts" / "output" / "result.json").is_file()
+        assert (trajectories_dir / "quick" / "quick-fixture" / "claude").is_dir()
+
+
 if __name__ == "__main__":
     check_run_identity()
     check_names_are_valid_and_unique()
@@ -1148,4 +1292,7 @@ if __name__ == "__main__":
     check_default_remote_trial_count()
     check_remote_progress_reporting()
     check_remote_upload_progress()
+    check_quick_agent_resolution_and_commands()
+    check_quick_workspace_is_public_only()
+    check_quick_mode_runs_host_cli_and_local_verifier()
     print("Harbor runner isolation checks passed")
