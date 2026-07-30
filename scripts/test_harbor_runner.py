@@ -122,7 +122,7 @@ def check_snapshot_results_map_to_original_task() -> None:
         )
         result = harbor_runner.JobResult(
             agent="claude-code",
-            model="anthropic/claude-opus-4-7",
+            model="anthropic/claude-opus-5",
             label="claude-opus",
             job_name="run-claude-opus",
             n_trials_expected=1,
@@ -153,9 +153,9 @@ def check_successful_archive_uses_agent_names_and_oracle() -> None:
         snapshot = jobs_dir / f"{run_id}.agent-task-snapshot"
         oracle_snapshot = jobs_dir / f"{run_id}.oracle-task-snapshot"
         agent_specs = [
-            ("claude-code", "claude-opus", "anthropic/claude-opus-4-7"),
-            ("codex", "codex-gpt-5-5", "openai/gpt-5.5"),
-            ("gemini-cli", "gemini-3-1-pro-preview", "google/gemini-3.1-pro-preview"),
+            ("claude-code", "claude-opus", "anthropic/claude-opus-5"),
+            ("codex", "codex-gpt-5-6-sol", "openai/gpt-5.6-sol"),
+            ("antigravity", "gemini-3-6-flash", "google/gemini-3.6-flash"),
         ]
         results = []
         for agent, label, model in agent_specs:
@@ -248,7 +248,7 @@ def check_successful_archive_uses_agent_names_and_oracle() -> None:
         trajectory_summary = trajectory_root / "summary.md"
         assert trajectory_summary.is_file()
         summary_text = trajectory_summary.read_text(encoding="utf-8")
-        assert "| Task | Oracle | claude-code | codex | gemini-cli | Status |" in summary_text
+        assert "| Task | Oracle | claude-code | codex | antigravity | Status |" in summary_text
         assert "| task | pass, reward 1 |" in summary_text
 
         retained = trajectory_root / "previous-success.marker"
@@ -872,17 +872,17 @@ def check_oracle_spinner() -> None:
 
 def check_agent_progress_order() -> None:
     specs = [
-        SimpleNamespace(job_name="claude", label="claude-opus"),
-        SimpleNamespace(job_name="codex", label="codex-gpt-5-5"),
-        SimpleNamespace(job_name="gemini", label="gemini-pro"),
+        SimpleNamespace(job_name="claude", label="claude-opus-5"),
+        SimpleNamespace(job_name="codex", label="codex-gpt-5-6-sol"),
+        SimpleNamespace(job_name="gemini", label="gemini-3-6-flash"),
     ]
     output = io.StringIO()
     reporter = harbor_runner.ProgressReporter(specs, output)
     reporter.report(specs[2], "gemini update")
     block = output.getvalue().split("=============", 1)[0]
-    assert block.index("claude-opus:") < block.index("codex-gpt-5-5:")
-    assert block.index("codex-gpt-5-5:") < block.index("gemini-pro:")
-    assert "gemini-pro: gemini update" in block
+    assert block.index("claude-opus-5:") < block.index("codex-gpt-5-6-sol:")
+    assert block.index("codex-gpt-5-6-sol:") < block.index("gemini-3-6-flash:")
+    assert "gemini-3-6-flash: gemini update" in block
 
 
 def check_remote_defaults_load_dotenv() -> None:
@@ -1001,7 +1001,7 @@ def check_remote_progress_reporting() -> None:
                 "job_id": "hr_abc-claude-opus",
             },
             {
-                "id": "codex-gpt-5-5",
+                "id": "codex-gpt-5-6-sol",
                 "agent": "codex",
                 "state": "QUEUED",
                 "expected_trials": 3,
@@ -1011,8 +1011,8 @@ def check_remote_progress_reporting() -> None:
                 "exception_count": 0,
             },
             {
-                "id": "gemini-pro",
-                "agent": "gemini-cli",
+                "id": "gemini-flash",
+                "agent": "antigravity",
                 "state": "QUEUED",
                 "expected_trials": 3,
                 "finished_trials": 0,

@@ -15,7 +15,14 @@ AGENTS = ("claude", "codex", "gemini")
 AGENT_DIRECTORIES = {
     "claude": ("claude-code", "claude"),
     "codex": ("codex",),
-    "gemini": ("gemini-cli", "gemini"),
+    # The Gemini slot runs through the Antigravity CLI; older runs used gemini-cli.
+    "gemini": ("antigravity", "gemini-cli", "gemini"),
+}
+# Substrings that identify an agent in a summary column header or label.
+AGENT_ALIASES = {
+    "claude": ("claude",),
+    "codex": ("codex",),
+    "gemini": ("gemini", "antigravity"),
 }
 DISPLAY_NAMES = {
     "claude": "Claude",
@@ -46,7 +53,7 @@ def classify(value: object) -> str | None:
     if "oracle" in text:
         return "oracle"
     for agent in AGENTS:
-        if agent in text:
+        if any(alias in text for alias in AGENT_ALIASES[agent]):
             return agent
     return None
 

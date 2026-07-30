@@ -12,8 +12,11 @@ trajectories/
 ├── oracle/
 ├── claude-code/
 ├── codex/
-└── gemini-cli/
+└── antigravity/
 ```
+
+The Gemini agent runs through the Antigravity CLI, so its trials land in
+`antigravity/`; older runs used `gemini-cli/`.
 
 Each trial should retain its resolved `config.json`, `result.json`, `trial.log`, agent transcript(s), collected `artifacts/manifest.json`, verifier logs, and `verifier/reward.txt`. Keep enough job-level summary information to map rewards and exceptions to trial directories.
 

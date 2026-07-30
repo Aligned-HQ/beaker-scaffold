@@ -44,8 +44,8 @@ Examples:
 
     # Override agents / concurrency:
     ./harbor_runner.py ./task \\
-        --run claude-code:anthropic/claude-opus-4-7:claude:3 \\
-        --run codex:openai/gpt-5.5:codex:3
+        --run claude-code:anthropic/claude-opus-5:claude:3 \\
+        --run codex:openai/gpt-5.6-sol:codex:3
 
 API credentials should be supplied to Modal with named secrets, for example
 `--modal-secret openai-api-key`. Secret values are never written by this
@@ -171,12 +171,12 @@ DOCKERFILE_FROM_RE = re.compile(
 # defaults together, or --run AGENT:MODEL:LABEL:N_CONCURRENT for an explicit
 # per-model exception.
 DEFAULT_RUNS: tuple[tuple[str, str, str, int], ...] = (
-    ("claude-code", "anthropic/claude-opus-4-7", "claude-opus", DEFAULT_CONCURRENCY),
-    ("codex", "openai/gpt-5.5", "codex-gpt-5-5", DEFAULT_CONCURRENCY),
+    ("claude-code", "anthropic/claude-opus-5", "claude-opus-5", DEFAULT_CONCURRENCY),
+    ("codex", "openai/gpt-5.6-sol", "codex-gpt-5-6-sol", DEFAULT_CONCURRENCY),
     (
-        "gemini-cli",
-        "google/gemini-3.1-pro-preview",
-        "gemini-3-1-pro-preview",
+        "antigravity",
+        "google/gemini-3.6-flash",
+        "gemini-3-6-flash",
         DEFAULT_CONCURRENCY,
     ),
 )
@@ -209,9 +209,9 @@ REMOTE_TRANSFER_TIMEOUT_SECONDS = 30 * 60
 LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 ORACLE_SPINNER_FRAMES = ("|", "/", "-", "\\")
 REMOTE_AGENT_CONFIGS = {
-    ("claude-code", "anthropic/claude-opus-4-7"): "claude-opus",
-    ("codex", "openai/gpt-5.5"): "codex-gpt-5-5",
-    ("gemini-cli", "google/gemini-3.1-pro-preview"): "gemini-pro",
+    ("claude-code", "anthropic/claude-opus-5"): "claude-opus",
+    ("codex", "openai/gpt-5.6-sol"): "codex-gpt-5-6-sol",
+    ("antigravity", "google/gemini-3.6-flash"): "gemini-flash",
 }
 REMOTE_EXCLUDED_PARTS = {
     ".git",
@@ -933,6 +933,8 @@ REMOTE_PROGRESS_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 REMOTE_AGENT_DISPLAY_NAMES = {
     "claude-code": "Claude Code",
     "codex": "Codex",
+    # The Gemini slot runs through the Antigravity CLI; keep the Gemini label.
+    "antigravity": "Gemini",
     "gemini-cli": "Gemini",
 }
 

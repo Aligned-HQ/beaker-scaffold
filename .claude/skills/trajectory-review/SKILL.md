@@ -35,7 +35,7 @@ on its own.
 - Typical completed run layout:
   `trajectories/summary.md`, `trajectories/oracle/`, and one direct folder per
   agent such as `trajectories/claude-code/`, `trajectories/codex/`, and
-  `trajectories/gemini-cli/`.
+  `trajectories/antigravity/` (the Gemini agent).
 
 ## Workflow
 

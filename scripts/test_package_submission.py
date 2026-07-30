@@ -76,7 +76,7 @@ def check_checker_uses_trajectories() -> None:
             {
                 "claude-code": [0, 0, 0],
                 "codex": [0, 0, 0],
-                "gemini-cli": [0, 0, 0],
+                "antigravity": [0, 0, 0],
             },
         )
         result = run_checker(root)
@@ -92,7 +92,7 @@ def check_high_average_is_advisory_when_gemini_fails() -> None:
             {
                 "claude-code": [1, 1, 1],
                 "codex": [1, 1, 1],
-                "gemini-cli": [1, 1, 0],
+                "antigravity": [1, 1, 0],
             },
         )
         result = run_checker(root)
@@ -110,7 +110,7 @@ def check_packaging_reports_gemini_hard_failure_but_continues() -> None:
             {
                 "claude-code": [1, 1, 0],
                 "codex": [0, 1, 1],
-                "gemini-cli": [1, 1, 1],
+                "antigravity": [1, 1, 1],
             },
         )
         result = subprocess.run(

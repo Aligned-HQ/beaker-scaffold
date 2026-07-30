@@ -583,7 +583,7 @@ When the Oracle and every agent trial finish successfully without job exits or
 trial exceptions, the runner writes `harbor-jobs/<run-id>.summary.json` and
 `.summary.md`, then replaces the direct `trajectories/` contents with
 `trajectories/oracle/`, `trajectories/claude-code/`,
-`trajectories/codex/`, `trajectories/gemini-cli/`, and
+`trajectories/codex/`, `trajectories/antigravity/` (the Gemini agent), and
 `trajectories/summary.md`. Incomplete agent runs remain under a run-specific
 trajectory archive for inspection and do not replace a previous successful
 direct archive. If the Oracle fails, the agent jobs are not started; inspect
