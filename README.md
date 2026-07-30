@@ -1,4 +1,4 @@
-# Beaker scientific-workflow scaffold
+# Beaker Task Guidelines
 
 This repository is a starter project for a reproducible scientific-computing task in the terminal-bench style. The files under `task/` contain a placeholder content so the container and verifier wiring can be exercised, all the placeholder content must be replaced with a real scientific task.
 
