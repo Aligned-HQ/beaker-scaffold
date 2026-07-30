@@ -8,7 +8,9 @@ ENV WORKSPACE_DIR=/workspace \
     TESTS_DIR=/tests \
     LOG_DIR=/logs/verifier
 
-WORKDIR ${TESTS_DIR}
+# Harbor sandbox providers inspect WORKDIR before Docker expands ENV values.
+# Keep this literal so remote verifier exec calls use the real directory.
+WORKDIR /tests
 
 COPY wheels/ /opt/wheels/
 

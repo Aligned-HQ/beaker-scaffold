@@ -60,6 +60,7 @@ DOCKER_FROM_RE = re.compile(
     r"^\s*FROM(?:\s+--platform=(?P<platform>\S+))?\s+(?P<image>\S+)",
     re.IGNORECASE,
 )
+VARIABLE_WORKDIR_RE = re.compile(r"^\s*WORKDIR\s+[^\n]*\$", re.IGNORECASE | re.MULTILINE)
 
 ALLOWED_ROOT_KEYS = {
     "schema_version",
@@ -292,6 +293,12 @@ class Checker:
                         f"{dockerfile_path.relative_to(self.root)}:{line_number} must use "
                         "FROM --platform=linux/amd64 for Modal"
                     )
+            if VARIABLE_WORKDIR_RE.search(text):
+                self.error(
+                    f"{dockerfile_path.relative_to(self.root)} uses a variable-based "
+                    "WORKDIR; Harbor sandbox providers parse it literally, so use an "
+                    "absolute path such as /workspace or /tests"
+                )
 
         if environment_path.is_file():
             text = environment_path.read_text(encoding="utf-8")

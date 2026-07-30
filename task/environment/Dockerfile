@@ -15,7 +15,9 @@ ENV WORKSPACE_DIR=/workspace \
     TESTS_DIR=/tests \
     LOG_DIR=/logs/verifier
 
-WORKDIR ${WORKSPACE_DIR}
+# Harbor sandbox providers inspect WORKDIR before Docker expands ENV values.
+# Keep this literal so remote exec calls use the real container directory.
+WORKDIR /workspace
 
 # The starter solution uses only the Python standard library, so the Oracle
 # image has no package-install or network bootstrap step. When a finished task
