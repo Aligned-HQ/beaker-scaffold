@@ -1,4 +1,4 @@
-# Beaker scientific-workflow scaffold
+# Beaker Task Guidelines
 
 This repository is a starter project for a reproducible scientific-computing task in the terminal-bench style. The files under `task/` contain a placeholder content so the container and verifier wiring can be exercised, all the placeholder content must be replaced with a real scientific task.
 
@@ -6,7 +6,6 @@ This README covers the main authoring path. Supplemental reference guides are
 linked at the end. The same instructions are also available in this
 [Google Document](https://docs.google.com/document/d/1EOXHxE6kHObi7E-NY54DZwdSaDAAzHwqJ9In21nLtGE/edit?usp=sharing).
 
-For a fully worked sample, see the [Aligned Beaker submission example](https://github.com/Aligned-HQ/aligned_beaker_submission).
 
 ## Motivation and intended flow
 
