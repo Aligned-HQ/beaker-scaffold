@@ -34,7 +34,7 @@ else
     red=$'\033[31m'
     reset=$'\033[0m'
     if [[ "$validation_output" == *"HARD SUBMISSION FAILURE"* ]]; then
-        printf '%s\n' "${red}HARD FAILURE: do not submit this task until the Gemini difficulty gate is fixed.${reset}" >&2
+        printf '%s\n' "${red}HARD FAILURE: do not submit this task until the per-agent difficulty gate is fixed.${reset}" >&2
     else
         printf '%s\n' "${red}WARNING: task does not meet the submission criteria.${reset}" >&2
     fi

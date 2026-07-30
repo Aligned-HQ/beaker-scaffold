@@ -21,9 +21,9 @@ the task. Report these separately as ignored trials; do not count them as task
 failures.
 
 Difficulty is not a defect. The submission checker has one hard difficulty
-gate: Gemini must fail at least once across the three trials. If Gemini passes
-all three, report that hard gate failure and that the task is likely too easy
-for the benchmark. The overall Claude/Codex/Gemini pass rate is an advisory
+gate: every agent must fail at least two of its four trials. If any of Claude,
+Codex, or Gemini fails fewer than two, report that hard gate failure and that
+the task is likely too easy for the benchmark. The overall Claude/Codex/Gemini pass rate is an advisory
 warning only; a rate at or above 50% suggests the task may be too easy but does
 not fail the check by itself. Judge whether each failure was scientific,
 structural, or platform noise; do not convert a low pass rate into a task bug

@@ -74,43 +74,44 @@ def check_checker_uses_trajectories() -> None:
         make_fixture(
             root,
             {
-                "claude-code": [0, 0, 0],
-                "codex": [0, 0, 0],
-                "antigravity": [0, 0, 0],
+                "claude-code": [0, 0, 0, 0],
+                "codex": [0, 0, 0, 0],
+                "antigravity": [0, 0, 0, 0],
             },
         )
         result = run_checker(root)
         assert result.returncode == 0, result.stderr
         assert "archived trajectories" in result.stdout
+        assert "every agent failed at least 2 trials" in result.stdout
 
 
-def check_high_average_is_advisory_when_gemini_fails() -> None:
+def check_high_average_is_advisory_at_the_failure_gate() -> None:
     with tempfile.TemporaryDirectory(prefix="beaker-pass-rate-warning-") as raw:
         root = Path(raw)
         make_fixture(
             root,
             {
-                "claude-code": [1, 1, 1],
-                "codex": [1, 1, 1],
-                "antigravity": [1, 1, 0],
+                "claude-code": [1, 1, 0, 0],
+                "codex": [1, 1, 0, 0],
+                "antigravity": [1, 1, 0, 0],
             },
         )
         result = run_checker(root)
         assert result.returncode == 0, result.stderr
         assert "WARNING: task may be too easy" in result.stderr
         assert "advisory only" in result.stderr
-        assert "Gemini failed 1/3 trial(s)" in result.stderr
+        assert "every agent met the 2-failure gate" in result.stderr
 
 
-def check_packaging_reports_gemini_hard_failure_but_continues() -> None:
+def check_packaging_reports_hard_failure_but_continues() -> None:
     with tempfile.TemporaryDirectory(prefix="beaker-package-submission-") as raw:
         root = Path(raw)
         make_fixture(
             root,
             {
-                "claude-code": [1, 1, 0],
-                "codex": [0, 1, 1],
-                "antigravity": [1, 1, 1],
+                "claude-code": [1, 1, 1, 0],
+                "codex": [0, 1, 1, 0],
+                "antigravity": [1, 1, 1, 1],
             },
         )
         result = subprocess.run(
@@ -124,8 +125,12 @@ def check_packaging_reports_gemini_hard_failure_but_continues() -> None:
         assert "\033[31mHARD FAILURE: do not submit this task" in result.stderr
         assert "Criteria details:" in result.stderr
         assert "HARD SUBMISSION FAILURE" in result.stderr
-        assert "Gemini passed all three trials" in result.stderr
-        assert "Claude 2/3" in result.stderr
+        assert "every agent must fail at least 2 trials" in result.stderr
+        assert "Claude failed 1/4 trial(s)" in result.stderr
+        assert "Gemini failed 0/4 trial(s)" in result.stderr
+        # Codex cleared the gate, so it must not be named as a shortfall.
+        assert "Codex failed" not in result.stderr
+        assert "Claude 3/4" in result.stderr
         assert (root / "submission/task").is_dir()
         assert (root / "submission/trajectories").is_dir()
         assert (root / "submission/skill-reports").is_dir()
@@ -134,6 +139,6 @@ def check_packaging_reports_gemini_hard_failure_but_continues() -> None:
 
 if __name__ == "__main__":
     check_checker_uses_trajectories()
-    check_high_average_is_advisory_when_gemini_fails()
-    check_packaging_reports_gemini_hard_failure_but_continues()
+    check_high_average_is_advisory_at_the_failure_gate()
+    check_packaging_reports_hard_failure_but_continues()
     print("Submission packaging checks passed")

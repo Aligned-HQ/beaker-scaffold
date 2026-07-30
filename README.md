@@ -29,7 +29,7 @@ different agents. Each agent must create its own solution without seeing the
 reference implementation, hidden truth, or verifier-only fixtures. The agents'
 outputs are evaluated by the tests and their work is reviewed afterward.
 
-![How the four authored files flow through a run: solve.py drives the Oracle run and instruction.md drives the agent runs; both produce output files at the paths you promised; the same verifier from tests/ grades both by recomputing from the private answer key; the Oracle must pass and Gemini must fail at least once. The overall agent pass rate is an advisory difficulty signal. process.md never executes.](assets/terminal_bench_contributor_four_files_flow.png)
+![How the four authored files flow through a run: solve.py drives the Oracle run and instruction.md drives the agent runs; both produce output files at the paths you promised; the same verifier from tests/ grades both by recomputing from the private answer key; the Oracle must pass and all agents must fail at least 50% of the time](assets/terminal_bench_contributor_four_files_flow.png)
 
 The load-bearing relationships behind the picture:
 
@@ -49,11 +49,11 @@ should be difficult enough that the agents may fail or disagree. This exposes
 where scientific reasoning, method selection, implementation, and validation
 remain challenging for the models.
 
-The hard trajectory gate is that Gemini must fail at least once across the
-three agent trials. If Gemini passes all three, the task is too easy for this
-benchmark and must not be submitted until its genuine scientific difficulty is
-increased. The overall Claude/Codex/Gemini pass rate remains an advisory
-difficulty signal: a rate of 50% or higher produces a warning that the task
+The hard trajectory gate is that every agent must fail at least two of its
+four trials. If any of Claude, Codex, or Gemini fails fewer than two, the task
+is too easy for this benchmark and must not be submitted until its genuine
+scientific difficulty is increased. The overall Claude/Codex/Gemini pass rate
+remains an advisory difficulty signal: 50% or higher produces a warning that the task
 may be too easy, but it does not fail the check by itself. Keep every tested
 requirement explicit in `instruction.md`, then rerun the authoring workflow
 after any difficulty change.
@@ -602,9 +602,10 @@ task bugs, prompt/test mismatches, tolerance problems, missing keys, and other
 clerical issues. If this fails you must update the task, rerun the harbor_runner and return the trajectory review.
 
 Use the trajectory results to apply the difficulty checks. The hard gate is
-that Gemini must fail at least once across the three trials; if Gemini passes
-all three, treat that as a hard failure and do not submit until the scientific
-workflow is made harder while remaining solvable by a human expert. The
+that each agent must fail at least two of its four trials; if any agent fails
+fewer than two, treat that as a hard failure and do not submit until the
+scientific workflow is made harder while remaining solvable by a human
+expert. The
 overall Claude/Codex/Gemini pass rate is advisory: 50% or higher produces a
 warning that the task may be too easy, but is not a failure by itself. Rerun
 the fixer, review, smoke test, Harbor campaign, and trajectory review after
@@ -645,8 +646,9 @@ Run `package-submission` as the last local authoring step. It creates a
 If `submission/` already exists, the script asks for confirmation before
 replacing it. It validates the archived trial evidence in `trajectories/`,
 using its `summary.json` or direct agent trial folders rather than the local
-Harbor job-output directory. Gemini must fail at least once; passing all three
-Gemini trials is a hard failure with an explicit do-not-submit message. The
+Harbor job-output directory. Every agent must fail at least two of its four
+trials; fewer than two failures for any agent is a hard failure with an
+explicit do-not-submit message. The
 overall Claude/Codex/Gemini pass rate is advisory: 50% or higher produces a
 warning that the task may be too easy, but does not prevent packaging, so the
 assembled submission can still be inspected. Remove generated caches, check

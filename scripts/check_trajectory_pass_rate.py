@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the Gemini difficulty gate and report advisory agent pass rates."""
+"""Validate the per-agent difficulty gate and report advisory agent pass rates."""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +30,9 @@ DISPLAY_NAMES = {
     "gemini": "Gemini",
 }
 COUNT_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)")
+# The hard difficulty gate: each agent must fail at least this many trials of
+# the four it runs. Passing more than that means the task is too easy to submit.
+REQUIRED_FAILURES = 2
 
 
 @dataclass(frozen=True)
@@ -378,6 +381,10 @@ def format_counts(counts: Counts) -> str:
     return f"{counts.passed}/{counts.trials}"
 
 
+def failures(counts: Counts) -> int:
+    return counts.trials - counts.passed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -404,21 +411,23 @@ def main() -> int:
         for agent in AGENTS
     )
 
-    gemini = counts["gemini"]
-    if gemini.passed == gemini.trials:
-        if gemini.trials == 3:
-            gemini_result = "Gemini passed all three trials (3/3, 100.0%)."
-        else:
-            gemini_result = (
-                "Gemini passed every observed trial "
-                f"({format_counts(gemini)}, 100.0%)."
-            )
+    short = [
+        (agent, failures(counts[agent]))
+        for agent in AGENTS
+        if failures(counts[agent]) < REQUIRED_FAILURES
+    ]
+    if short:
+        detail = "; ".join(
+            f"{DISPLAY_NAMES[agent]} failed {count}/{counts[agent].trials} trial(s)"
+            for agent, count in short
+        )
         print(
-            "ERROR: HARD SUBMISSION FAILURE: "
-            f"{gemini_result} The task is too easy for the benchmark; do not "
-            "submit it. Increase the genuine scientific difficulty and rerun "
-            "all three agents. The overall average pass-rate check is advisory "
-            f"only (trajectories report {average * 100:.1f}%: {rendered}).",
+            "ERROR: HARD SUBMISSION FAILURE: every agent must fail at least "
+            f"{REQUIRED_FAILURES} trials, but {detail}. The task is too easy "
+            "for the benchmark; do not submit it. Increase the genuine "
+            "scientific difficulty and rerun all three agents. The overall "
+            "average pass-rate check is advisory only (trajectories report "
+            f"{average * 100:.1f}%: {rendered}).",
             file=sys.stderr,
         )
         return 1
@@ -427,15 +436,15 @@ def main() -> int:
         print(
             "WARNING: task may be too easy: the overall Claude/Codex/Gemini "
             "pass rate is "
-            f"{average * 100:.1f}% (the < 50% target is advisory only; "
-            f"Gemini failed {gemini.trials - gemini.passed}/{gemini.trials} "
-            f"trial(s): {rendered}).",
+            f"{average * 100:.1f}% (the < 50% target is advisory only; every "
+            f"agent met the {REQUIRED_FAILURES}-failure gate: {rendered}).",
             file=sys.stderr,
         )
 
     print(
         "Trajectory pass-rate check (archived trajectories): "
-        f"{rendered}; average {average * 100:.1f}%; Gemini failed at least once."
+        f"{rendered}; average {average * 100:.1f}%; every agent failed at "
+        f"least {REQUIRED_FAILURES} trials."
     )
     return 0
 

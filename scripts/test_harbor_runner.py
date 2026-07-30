@@ -974,12 +974,13 @@ def check_default_remote_trial_count() -> None:
         run=[],
         n_concurrent=None,
         default_concurrency=harbor_runner.DEFAULT_CONCURRENCY,
-        repeats=3,
+        repeats=harbor_runner.DEFAULT_REPEATS,
     )
     payload = harbor_runner.remote_agent_payload(args)
     assert len(payload) == 3
     assert all(item["concurrency"] == 1 for item in payload)
-    assert args.repeats * sum(int(item["concurrency"]) for item in payload) == 9
+    # Four trials for each of the three agents.
+    assert args.repeats * sum(int(item["concurrency"]) for item in payload) == 12
 
 
 def check_remote_progress_reporting() -> None:
