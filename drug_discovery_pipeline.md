@@ -60,7 +60,9 @@ Establishing and confirming a target \- on biology **and** on tractability, comp
 
 **Representative components - clinical precedent & tractability**
 
-- Score a target's clinical precedent and assign a tractability bucket.  
+"Clinical precedent" and "tractability" are not universal labels. State whether precedent means the same target and indication, the same target in another modality, a target class, or a pathway. Tractability also changes with the TPP, modality, internal capabilities, portfolio strategy, and risk tolerance. If the verifier expects a bucket, the task must provide the dimensions, evidence rules, decision thresholds, and bucket definitions. If designing the framework is the task, grade the evidence and internal consistency rather than a hidden company-specific label.
+
+- Given a target dossier, a TPP, modality constraints, and two supplied organization-specific rubrics, classify the clinical precedent and score the defined tractability dimensions under each rubric. Assign both buckets and identify the evidence, assumptions, or rubric choices that explain any difference.
 - Map a target to historical trial outcomes; infer a safety prior from human LoF data. 
 
 **Representative components - biomarker & patient fraction**
@@ -159,6 +161,7 @@ Use medicinal and synthetic chemistry judgment when defining tractability. A gen
 - For generated molecules or fragment-growing/linking proposals, check chemical validity, novelty, route plausibility, starting-material availability, and the property constraints that matter for the target and assay.
 - Triage virtual hits on selectivity, solubility, aggregation, permeability where relevant, chemical stability, storage and formulation, supplier availability, cost, and synthetic accessibility. A compound that needs a solvent concentration that damages the protein or cells is not an experimentally useful hit.
 - Recommend a diverse purchase, synthesis, and testing set. Specify assay concentrations, solvent constraints, controls, and orthogonal or counter-screens that can distinguish binding from aggregation, fluorescence interference, nonspecific reactivity, or another assay artifact.
+- Estimate a k\_off-related observable (residence time) from enhanced-sampling trajectories.
 
 Example workflow: reduce a virtual screen to a small panel that a project team should purchase or synthesize. Use validated pose evidence, ligand-based evidence, chemical and formulation liabilities, availability or route feasibility, and assay compatibility. Explain every rejection and advancement, then propose the first experimental screen and its controls.
 
@@ -172,9 +175,7 @@ Binding affinity is necessary but not sufficient; series ranking must connect ta
 
 **Representative components**
 
-- Run relative free-energy calculations on a congeneric series and match the experimental affinity ranking.  
-- Compute a reaction barrier or covalent-warhead energetics with QM / QM-MM.  
-- Estimate a k\_off-related observable (residence time) from enhanced-sampling trajectories.  
+- Run relative free-energy calculations on a congeneric series and match the experimental affinity ranking.
 - Apply matched-molecular-pair transforms and predict the resulting activity shift.  
 - Score a candidate against an off-target/selectivity panel and flag liabilities.  
 - Predict a functional / phenotypic response (e.g., transcriptomic signature reversal) and rank leads on it, not on affinity alone. 

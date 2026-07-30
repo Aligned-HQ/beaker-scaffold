@@ -351,11 +351,20 @@ The task should have:
   that can change later choices;
 - validation focused on the region, subgroup, operating range, or property that
   matters to the decision, rather than only an easy global score;
+- an operational definition or supplied rubric for any context-dependent label
+  that the verifier expects, including its dimensions and decision thresholds;
 - an explicit treatment of uncertainty and a distinction between direct
   evidence, inference, and speculation where that distinction affects the
   recommendation;
 - at least one substantive machine-checkable output, normally alongside a memo, diagnostic, or decision log;
 - a deterministic or explicitly controlled evaluation that does not depend on a live service.
+
+Terms such as "tractability" or "developability" often have different
+definitions across organizations and programs. Do not grade an agent against
+an unstated house definition. Supply the relevant TPP, modality, rubric, and
+thresholds when the output must match a category. If constructing the decision
+framework is the scientific work, verify the underlying evidence, calculations,
+and consistency instead of requiring one hidden label.
 
 For protein-centered work, target choice is part of task design. If the target
 is famous enough that its mechanism, structure, or standard experimental
