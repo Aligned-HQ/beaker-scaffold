@@ -2,7 +2,9 @@
 
 This repository is a starter project for a reproducible scientific-computing task in the terminal-bench style. The files under `task/` contain a placeholder content so the container and verifier wiring can be exercised, all the placeholder content must be replaced with a real scientific task.
 
-This file is the whole authoring guide, the same instructions are also available in this [Google Document](https://docs.google.com/document/d/1EOXHxE6kHObi7E-NY54DZwdSaDAAzHwqJ9In21nLtGE/edit?usp=sharing)
+This README covers the main authoring path. Supplemental reference guides are
+linked at the end. The same instructions are also available in this
+[Google Document](https://docs.google.com/document/d/1EOXHxE6kHObi7E-NY54DZwdSaDAAzHwqJ9In21nLtGE/edit?usp=sharing).
 
 For a fully worked sample, see the [Aligned Beaker submission example](https://github.com/Aligned-HQ/aligned_beaker_submission).
 
@@ -216,118 +218,8 @@ changing it, run the check on its own at any time:
 ./scripts/check-setup.sh
 ```
 
-## 3b. Supplemental: installing everything by hand
-
-Most authors can skip this section. Use it when `setup.sh` cannot run on your
-workstation, when you would rather install into an environment you manage
-yourself, or when the check reports something out of date and you want the
-specific command. `check-setup.sh` itself is read-only: it reports missing tools
-but never installs packages or contacts the network.
-
-Everything below is installed on the authoring machine only.
-
-| Dependency | Needed for | Install |
-| --- | --- | --- |
-| Docker Desktop or Docker Engine | building the runtime and verifier images, the local smoke test | <https://docs.docker.com/get-started/get-docker/> |
-| Harbor CLI (`harbor`) | validating the task and running the Oracle locally | `uv tool install harbor` |
-| Python 3.11+ | scaffold scripts and `tomllib` | `brew install python@3.12`, or your distro package |
-| `rich` Python package | runner panels, tables, and transfer progress | `python3 -m pip install -r requirements.txt` |
-| Git, Make, ripgrep | skill wrappers, reviews, repository search | `brew install git make ripgrep` or `sudo apt-get install -y git make ripgrep` |
-| Claude Code or Codex CLI | the task-fixer, task-review, and trajectory-review skills | `npm install -g @anthropic-ai/claude-code` or `npm install -g @openai/codex` |
-| Workbench runner token | remote Harbor runs | copy `.env.example` to `.env` and paste your `WORKBENCH_RUNNER_TOKEN` |
-
-`setup.sh` covers every row except Docker, the agent CLI, and the token
-itself, which step 3.1 covers. The subsections below give the detail for each.
-
-### Docker
-
-Docker builds the runtime image, the isolated verifier image, and the local
-smoke-test container. It is required.
-
-- macOS and Windows: install Docker Desktop from
-  <https://docs.docker.com/get-started/get-docker/>.
-- Linux: install Docker Engine plus the Compose plugin
-  (<https://docs.docker.com/engine/install/>), then add your user to the
-  `docker` group so the CLI can reach the daemon without `sudo`.
-- Start the daemon before any build, smoke test, or Oracle run.
-
-Verify:
-
-```bash
-docker --version
-docker info --format '{{.ServerVersion}}'
-docker compose version
-```
-
-On Apple silicon, enable Docker Desktop → Settings → General → *Use Rosetta for
-x86/amd64 emulation*. Task Dockerfiles pin `FROM --platform=linux/amd64`, so the
-build has to emulate that architecture locally.
-
-### Harbor CLI
-
-Harbor is the harness that validates the task bundle and runs the Oracle
-locally. `setup.sh` installs it for you; to do it by hand, use
-[uv](https://docs.astral.sh/uv/). Harbor requires Python 3.12 or newer; an
-isolated tool install keeps that requirement separate from the interpreter the
-scaffold scripts use.
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # or: brew install uv
-uv tool install harbor
-harbor --version                                   # 0.9.0 is known good
-```
-
-This installs the `harbor`, `hb`, and `hr` entrypoints on your `PATH`. If you
-prefer pip, `pip install harbor` works when the active interpreter is Python
-3.12+. Upgrade later with `uv tool upgrade harbor`. Source, cookbook, and
-examples: <https://github.com/harbor-framework/harbor>.
-
-### Python and host-side Python packages
-
-The scaffold scripts need Python 3.11 or newer for `tomllib`
-(`brew install python@3.12`, or your distribution's package). The vendored
-runner uses Rich for terminal panels, tables, and transfer progress. `setup.sh`
-installs it into `.venv`; to install it into an environment you manage yourself:
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-### Agent CLI
-
-At least one of Claude Code or Codex must be installed; the task-fixer,
-task-review, and trajectory-review wrappers drive them.
-
-```bash
-npm install -g @anthropic-ai/claude-code   # or: curl -fsSL https://claude.ai/install.sh | bash
-npm install -g @openai/codex               # or: brew install codex
-```
-
-Authenticate each CLI once by running it interactively. `check-setup.sh` does
-not authenticate agent CLIs for you.
-
-### Git, Make, ripgrep, and a hash utility
-
-```bash
-brew install git make ripgrep                   # macOS
-sudo apt-get install -y git make ripgrep        # Debian/Ubuntu
-```
-
-`shasum` or `sha256sum` is already present on macOS and mainstream Linux
-distributions; the skill wrappers use it to stamp report metadata.
-
-### Workbench runner token
-
-Remote runs authenticate with your own scoped token. Log in to
-<https://workbench.alignedhq.ai>, open your profile → Settings, create an access
-token, then:
-
-```bash
-cp .env.example .env
-# paste the token into WORKBENCH_RUNNER_TOKEN=<token>
-```
-
-Never commit, share, or reuse another author's `.env` or token.
+If the setup script cannot run on your workstation, see the
+[manual toolchain setup](docs/manual-toolchain-setup.md).
 
 ## 4. Edit the task bundle
 
@@ -697,30 +589,8 @@ test runs the verifier script inside the environment image, any dependency it
 needs must be available there. That is also exactly how the Nexus sandbox runs,
 so a passing smoke test is a good predictor of submission behaviour.
 
-### Optional: run one quick local agent trial
-
-Use quick mode when you want to test the task with the Claude Code or Codex CLI
-you already use for the authoring skills. It runs that host executable once,
-stages only `instruction.md` and public runtime inputs into an isolated
-workspace, and verifies the output in a local Docker container with networking
-disabled. It does not run Harbor, contact Workbench, create a Modal app, or
-expose `solution/` and `tests/` to the agent:
-
-```bash
-./harbor_runner.py task --quick --quick-agent codex
-# or let it choose Codex, then Claude Code:
-./harbor_runner.py task --quick
-```
-
-The selected CLI uses its own local login and configured model. The one-trial
-evidence remains in `harbor-jobs/` and, when archiving is enabled, under
-`trajectories/quick/<run-id>/` so it cannot be mistaken for the required
-three-agent campaign. Use `--quick-agent claude` to select Claude Code
-explicitly. `--quick --dry-run` previews the host command without starting
-Docker or the agent. While the host agent is running in a terminal, the runner
-shows an in-place `Agent running...` spinner refreshed at 8 FPS. Redirected
-output uses `--progress-interval-sec` (30 seconds by default) for newline
-heartbeats; the full agent transcript is in the printed runner log.
+Before the required campaign, you can optionally
+[run one quick local agent trial](docs/quick-local-agent-trial.md).
 
 ## 9. Run the Harbor task runner
 
@@ -805,64 +675,10 @@ that all intended inputs are tracked, and inspect the final diff.
 Upload the resulting `submission/` directory to the Workbench task you claimed
 in step 1.
 
-## Layout
+## Supplemental guides
 
-```text
-.
-├── README.md                         # this guide: setup, authoring, run, submit
-├── harbor_runner.py                  # Docker smoke test and isolated Harbor runner
-├── task_implementation.toml           # rubric consumed by task-review
-├── scripts/
-│   ├── setup.sh                      # create the .venv, install deps, then check
-│   ├── check-setup.sh                # local toolchain and Docker check
-│   ├── validate_scaffold.py           # fast static contract check
-│   ├── test_harbor_runner.py          # runner isolation regression checks
-│   ├── test_package_submission.py     # trajectory packaging regression checks
-│   ├── run-skill.sh                   # shared agent-skill runner
-│   ├── run-task-fixer.sh              # task-fixer entrypoint
-│   ├── run-task-review.sh             # task-review entrypoint
-│   ├── run-trajectory-review.sh       # trajectory-review entrypoint
-│   ├── package-submission.sh          # assemble the Workbench submission
-│   └── verify-skill-runs.sh            # submission report/status checker
-├── skill-reports/                     # latest Markdown result from each skill
-│   ├── task-fixer.md
-│   ├── task-review.md
-│   └── trajectory-review.md
-├── skill-status.md                    # overwritten latest status for each skill
-├── task/
-│   ├── README.md                      # maintainer notes for this task
-│   ├── instruction.md                 # agent-facing scientific contract
-│   ├── task.toml                      # Harbor metadata and resources
-│   ├── environment/
-│   │   ├── Dockerfile                 # agent runtime image only
-│   │   └── data/                      # public runtime inputs
-│   ├── solution/
-│   │   ├── solve.sh                   # Oracle entrypoint
-│   │   ├── solve.py                   # derivation, not a stored answer
-│   │   └── process.md                 # intended expert workflow
-│   └── tests/
-│       ├── Dockerfile                 # isolated verifier image
-│       ├── test.sh                    # verifier entrypoint/reward writer
-│       ├── test_outputs.py            # executable scientific assertions
-│       └── data/                      # verifier-only fixtures or truth
-└── trajectories/
-    └── README.md                      # archive contract; no fake runs
-```
-
-## Skill reports
-
-Each skill wrapper overwrites its Markdown result in `skill-reports/`. The
-shared `skill-status.md` file is overwritten at the start and end of every run;
-the current skill is marked `Run` while active and `Pass` or `Fail` when it
-finishes. The final checker reads these reports and requires passing
-task-fixer, task-review, and trajectory-review results in order. The task-fixer
-report retains the final handoff rather than the agent's intermediate tool
-transcript. The task-review report retains the practitioner-plausibility section
-through its verdicts, top fixes, and N/A notes; trajectory-review retains its
-complete verdict.
-
-## Authoring boundary
-
-The agent should see the scientific question, public inputs, constraints, and exact output schema in `task/instruction.md`. It should not see the reference solution, hidden truth, or verifier-only fixtures. Put agent inputs in `task/environment/data/`; put the answer key and any private fixture in `task/tests/data/`, which the agent never sees. Check in the hidden files themselves rather than a script that generates them at build time — that step does not run when the task is graded. In solution and verifier code, read every path from the environment variables the task provides — `WORKSPACE_DIR`, `DATA_DIR`, `OUTPUT_DIR`, `SOLUTION_DIR`, `TESTS_DIR`, and `LOG_DIR` — instead of hardcoding them. Keep Dockerfile `WORKDIR` directives as literal absolute paths (`/workspace` and `/tests`): Harbor sandbox providers inspect them before Docker expands environment variables.
-
-The starter `task/` uses `input.csv` and a simple summary only to prove that the mounts, output paths, and reward file work. Replace that contract before asking agents to solve the task. The finished task should represent a real expert workflow with fit-for-purpose input selection, connected method choices, intermediate validation, evidence integration, and a substantive machine-checkable decision; a long schema, a toy transform, or a collection of unrelated analyses is not enough.
+- [Manual toolchain setup](docs/manual-toolchain-setup.md)
+- [Quick local agent trial](docs/quick-local-agent-trial.md)
+- [Repository layout](docs/repository-layout.md)
+- [Skill reports](docs/skill-reports.md)
+- [Authoring boundary](docs/authoring-boundary.md)
