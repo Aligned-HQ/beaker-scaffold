@@ -39,5 +39,7 @@ cpus = 2
 memory_mb = 4096
 storage_mb = 10240
 gpus = 0
-# The sandbox is air-gapped. Vendor every dependency into the image instead.
-network_mode = "no-network"
+# Client policy: the Oracle and the agent trials both run with public network so
+# they can reach scientific databases and tools over HTTP. The toolchain is not
+# fetched at run time: keep Python libraries and code vendored in the image.
+network_mode = "public"

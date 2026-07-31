@@ -211,9 +211,9 @@ def main() -> int:
                 errors.append(f"could not read {task_rel}/task.toml: {exc}")
             else:
                 environment = task_config.get("environment", {})
-                if not isinstance(environment, dict) or environment.get("network_mode") != "no-network":
+                if not isinstance(environment, dict) or environment.get("network_mode") != "public":
                     errors.append(
-                        f'{task_rel}/task.toml must set [environment].network_mode = "no-network"'
+                        f'{task_rel}/task.toml must set [environment].network_mode = "public"'
                     )
 
     trajectory_rel: str | None = None

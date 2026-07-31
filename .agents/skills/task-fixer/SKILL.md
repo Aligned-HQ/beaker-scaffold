@@ -42,11 +42,13 @@ the open-source Harbor runtime. Most `task.toml` parameters are ignored there.
 Treat every constraint below as an Oracle-readiness gate, not as a reason to
 weaken the task contract.
 
-**Network.** The sandbox is air-gapped. Set
-`[environment].network_mode = "no-network"`, which is what the submission
-sandbox reads. Never use `network_mode = "public"` for a submitted task.
-Oracle and verifier execution must not require APIs, downloads, package
-installation, or remote databases.
+**Network.** Set `[environment].network_mode = "public"`, which is what the
+submission sandbox reads. Public network is the client policy for both the
+Oracle and the agent trials: it lets the reference solution and the agent query
+scientific databases and tools over HTTP. It is not a licence to fetch the
+toolchain. Python libraries and code stay vendored in the image, and no build
+or run step may install a package, so keep existing HTTP calls to scientific
+services and remove or replace run-time installs.
 
 **One container.** The sandbox runs a single container and ignores
 `[verifier].environment_mode`; it never builds `tests/Dockerfile`. Everything
@@ -133,7 +135,8 @@ the exact host error while completing all static repairs.
 Do not put binary packages in this Markdown skill file. The mirrored helper
 `scripts/vendor_offline_dependencies.py` is the reusable vendoring mechanism.
 Run it on the approved authoring machine or package mirror, not inside a task
-container, because the task environment has no internet. First derive the
+container, so the image carries every library and no build or run step depends
+on a package index. First derive the
 actual imports and versions from the existing task and keep runtime and
 verifier wheelhouses separate when their dependencies differ. For the common
 Python 3.12 dependencies in this scaffold, examples are:
@@ -238,8 +241,10 @@ the exact missing path and remedy instead of inventing it.
 
    Edit `task.toml` only as needed to make it valid and Oracle-compatible:
 
-   - set `[environment].network_mode = "no-network"`; never set
-     `network_mode = "public"`. Preserve the task's scientific contract;
+   - set `[environment].network_mode = "public"`, the default for the Oracle
+     and the agent trials. Preserve the task's scientific contract, including
+     its HTTP calls to scientific databases and tools, and do not let the
+     public network replace a vendored library;
    - do not rely on `environment_mode`: the submission sandbox ignores it and
      runs one container, so the verifier's dependencies belong in the runtime
      image. `tests/Dockerfile` may still exist for local two-image runs, but it
@@ -324,8 +329,9 @@ the exact missing path and remedy instead of inventing it.
      and explicitly copy verifier files and verifier data in separate mode;
    - use `bash /solution/solve.sh` when an executable bit cannot be relied on,
      but do not edit the script itself;
-   - avoid absolute host paths, build-time downloads, runtime network access,
-     and hidden answer files.
+   - avoid absolute host paths, build-time downloads, run-time package
+     installs, and hidden answer files. A run-time HTTP call to a scientific
+     database or tool is part of the task contract, not a defect.
 
    If a path in the existing solution, instruction, or verifier is incompatible
    with the canonical container layout and cannot be corrected in metadata or a
@@ -408,10 +414,12 @@ the exact missing path and remedy instead of inventing it.
    usually downstream of the producer or verifier failing; repair that primary
    failure rather than adding placeholder outputs or changing artifact names.
 
-   Use `--network none` for any permitted container check. Remove temporary
-   containers and images in a trap/cleanup path, including after interruption.
-   If Docker or an offline dependency is unavailable, report the check as
-   unverified rather than enabling internet or claiming success.
+   Use `--network none` for any permitted container check. The task runs with
+   `network_mode = "public"`, but the import and file-presence checks stay
+   offline on purpose: that is how you prove the libraries are vendored rather
+   than fetched. Remove temporary containers and images in a trap/cleanup path,
+   including after interruption. If Docker or a vendored library is unavailable,
+   report the check as unverified rather than installing it or claiming success.
 
 7. **Audit the fail → pass transition statically.**
 
@@ -434,14 +442,14 @@ the exact missing path and remedy instead of inventing it.
 
    Report any of these as a blocker rather than editing the verifier or the
    solution. The executable proof belongs to the project smoke test, which runs
-   the solution and the verifier in one offline container.
+   the solution and the verifier in one container.
 
 ## Failure handling
 
 Return `FAIL` only after attempting the in-scope repairs. Fail when a required
 implementation or scientific input is missing, metadata remains invalid, a
-Docker build context or path remains broken, a required dependency cannot be
-supplied offline, a network dependency remains, an image is not `linux/amd64`,
+Docker build context or path remains broken, a required library cannot be
+vendored, a run-time install remains, an image is not `linux/amd64`,
 an image exceeds 2 GB, or a mismatch can only be fixed by editing instruction,
 solution, or verifier content. Include the exact file and a concise remedy for
 the author. A denied Docker socket is an external validation blocker: continue
@@ -477,12 +485,13 @@ files changed, checks run, and remaining blockers. When run through
 - Keep all edits inside the one target task and limited to metadata, reviewer
   notes, Docker/build configuration, file modes, and required local input or
   dependency data.
-- Do not introduce network access, secrets, hidden answer data, task-local agent
-  skills, caches, or unrelated files.
+- Do not introduce a new network dependency, secrets, hidden answer data,
+  task-local agent skills, caches, or unrelated files. Existing HTTP access to
+  a scientific database or tool stays as the author wrote it.
 - Do not leave online apt, pip, curl, or package bootstrap commands when an
-  approved offline base or local bundle can replace them; never enable internet
-  access or set `network_mode = "public"` to make a build pass; that fails
-  submission pre-validation outright.
+  approved offline base or local bundle can replace them. `network_mode` is
+  `"public"` by policy, so it is never the fix for a failing build or a missing
+  library: vendor the library instead.
 - Never stage build artifacts under `/tmp`, and never leave a verifier
   dependency installed only in `tests/Dockerfile`.
 - Never write the author's scientific metadata: the task description, the three

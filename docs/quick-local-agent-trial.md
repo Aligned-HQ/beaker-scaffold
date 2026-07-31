@@ -7,9 +7,10 @@ required [Harbor campaign](../README.md#9-run-the-harbor-task-runner).
 Use quick mode when you want to test the task once with the Claude Code or
 Codex CLI you already use for the authoring skills. It stages only
 `instruction.md` and public runtime inputs into an isolated workspace, runs the
-host executable, and verifies its output in a local Docker container with
-networking disabled. It does not run Harbor, contact Workbench, create a Modal
-app, or expose `solution/` and `tests/` to the agent:
+host executable, and verifies its output in a local Docker container that
+follows the task's `network_mode` (`public` by default). It does not run
+Harbor, contact Workbench, create a Modal app, or expose `solution/` and
+`tests/` to the agent:
 
 ```bash
 ./harbor_runner.py task --quick --quick-agent codex

@@ -77,8 +77,10 @@ on its own.
      Also structural, and each fatal at submission: a verifier dependency
      installed only in the verifier image, since the submission sandbox runs one
      container; a dependency or cache staged under `/tmp` at build time, which
-     the sandbox wipes with a fresh tmpfs; an install command reached at runtime
-     in an air-gapped container; a verifier that passes without the agent having
+     the sandbox wipes with a fresh tmpfs; a run-time package install, which the
+     task must not need because `network_mode = "public"` is for reaching
+     scientific databases and tools over HTTP, not for fetching the toolchain;
+     a verifier that passes without the agent having
      produced anything, which fails validation as trivially solvable; and a
      verifier whose second run disagrees with its first because it left state
      behind.

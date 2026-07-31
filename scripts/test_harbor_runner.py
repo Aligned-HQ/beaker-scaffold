@@ -392,7 +392,7 @@ def check_remote_archive_extracts_evidence_without_task_files() -> None:
         trajectories = task_root / "trajectories" / "codex" / "trial-1"
         trajectories.mkdir(parents=True)
         (task_root / "task.toml").write_text(
-            '[environment]\nnetwork_mode = "no-network"\n', encoding="utf-8"
+            '[environment]\nnetwork_mode = "public"\n', encoding="utf-8"
         )
         (task_root / "instruction.md").write_text("private task prompt\n", encoding="utf-8")
         (task_root / "solution").mkdir()
@@ -826,7 +826,7 @@ def check_smoke_mode_wiring() -> None:
     assert "<redacted>" in rendered
 
 
-def check_network_split_snapshots() -> None:
+def check_public_network_snapshots() -> None:
     task_root = Path(__file__).resolve().parents[1] / "task"
     original_sleep = harbor_runner.time.sleep
     harbor_runner.time.sleep = lambda _seconds: None
@@ -838,18 +838,20 @@ def check_network_split_snapshots() -> None:
                 jobs_dir,
                 "snapshot-test",
                 snapshot_label="oracle-task-snapshot",
-                network_mode="no-network",
             )
             agent = harbor_runner.snapshot_task_root(
                 oracle,
                 jobs_dir,
                 "snapshot-test",
                 snapshot_label="agent-task-snapshot",
-                network_mode="public",
             )
             assert oracle != agent
-            assert harbor_runner.load_toml(oracle / "task.toml")["environment"]["network_mode"] == "no-network"
+            assert harbor_runner.DEFAULT_NETWORK_MODE == "public"
+            assert harbor_runner.load_toml(oracle / "task.toml")["environment"]["network_mode"] == "public"
             assert harbor_runner.load_toml(agent / "task.toml")["environment"]["network_mode"] == "public"
+            assert harbor_runner.task_network_mode(agent) == "public"
+            assert harbor_runner.docker_network_args("public") == []
+            assert harbor_runner.docker_network_args("no-network") == ["--network", "none"]
     finally:
         harbor_runner.time.sleep = original_sleep
 
@@ -1148,7 +1150,7 @@ timeout_sec = 10
 timeout_sec = 10
 
 [environment]
-network_mode = "no-network"
+network_mode = "public"
 """,
         encoding="utf-8",
     )
@@ -1297,7 +1299,7 @@ if __name__ == "__main__":
     check_remote_service_error_skips_archive_download()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()
-    check_network_split_snapshots()
+    check_public_network_snapshots()
     check_oracle_spinner()
     check_agent_progress_order()
     check_remote_defaults_load_dotenv()

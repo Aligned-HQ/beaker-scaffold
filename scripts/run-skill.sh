@@ -566,10 +566,13 @@ ${SKILL_FILE}
 Apply the skill to this target:
 ${TARGET_ABS}
 
-The client policy is mandatory: task environments have no internet access and
-each final runtime or separate verifier image must be at most 2 GB
-(2,000,000,000 bytes). Preserve those constraints and do not enable internet
-access to work around a bootstrap or dependency issue.
+The client policy is mandatory: task environments set
+network_mode = "public" for the Oracle and the agent trials, and each final
+runtime or separate verifier image must be at most 2 GB (2,000,000,000 bytes).
+Preserve those constraints. Public network exists so the Oracle and the agent
+can reach scientific databases and tools over HTTP; it is not a licence to
+install dependencies at run time. Keep Python libraries and code vendored in
+the image and do not replace a vendored dependency with a run-time install.
 
 Docker access mode for this invocation is ${DOCKER_ACCESS}. For a Codex
 task-fixer or task-review run, Docker access is provided through the

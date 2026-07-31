@@ -55,7 +55,7 @@ outputs are evaluated by the tests and their work is reviewed afterward.
 
 The load-bearing relationships behind the picture:
 
-- `solve.py` proves the task is solvable. It runs first, offline, unattended, reading `DATA_DIR` and writing `OUTPUT_DIR`. If it fails the verifier, no agent is ever asked to try — so it is the fastest way to discover that your tests are wrong.
+- `solve.py` proves the task is solvable. It runs first, unattended, reading `DATA_DIR` and writing `OUTPUT_DIR`. If it fails the verifier, no agent is ever asked to try — so it is the fastest way to discover that your tests are wrong.
 
 - `instruction.md` is the agent's entire world. The agents never see `solve.py`, never see `task/tests/data/`. Every filename, key, column, unit, and threshold the verifier touches has to appear here or be obvious from the public data, or a failure is your bug rather than a scientific result. This is the one file you hand-write in your own voice.
 
@@ -325,10 +325,13 @@ task/
 
 Use `task/environment/data/` for files the agent is allowed to inspect, and `task/tests/data/` for the answer key and any private fixture. The agent never sees the second folder. If your tests need one of the public inputs too, put a copy in both and check that the copies match.
 
-The task runs with no internet, so every library it uses has to be bundled in
-advance. Write the solution and tests with the libraries you need, note which
-ones they are, and let the task-fixer in step 5 do the bundling; the `wheels/`
-directories in the layout above are where it puts them.
+The task runs with `network_mode = "public"`, so the solution and the agent may
+query scientific databases and tools over HTTP. That does not extend to the
+toolchain: every library the task uses still has to be bundled in advance, and
+nothing installs packages at run time. Write the solution and tests with the
+libraries you need, note which ones they are, and let the task-fixer in step 5
+do the bundling; the `wheels/` directories in the layout above are where it
+puts them.
 
 ### 4.3 Write the agent contract
 
@@ -359,10 +362,11 @@ solvable and that the tests grade a real workflow. Nobody scores it against the
 agents; it runs first, and if it fails the tests, the campaign stops before any
 agent is asked to try.
 
-**How it will be run.** On a Linux machine with no internet, once, start to
+**How it will be run.** On a Linux machine with public network, once, start to
 finish, with nobody watching. Your script is launched, it reads its inputs,
 writes its results as files, and exits. There are no prompts, no notebook cells
-to run by hand, no manual steps in the middle.
+to run by hand, no manual steps in the middle. It may call an HTTP API for data
+or a scientific tool, but it must not install anything.
 
 **What you write.** Three files in `task/solution/`:
 
@@ -396,7 +400,12 @@ your results go, using the exact filenames you promised in `instruction.md`.
 - finish comfortably inside the time budget; a task gets 60 minutes total;
 - if you need a library, just import it and use it. Getting it installed and
   working offline is what the task-fixer does in step 5 — do not spend time on
-  packaging here.
+  packaging here;
+- you may query a scientific database or tool over HTTP, but never install a
+  package at run time. If a remote answer can drift between runs, note it in
+  `solution_explanation` and make the tolerances absorb it; if the record you
+  need is fixed, prefer a copy in `environment/data/` so a slow or unavailable
+  service cannot fail the run.
 
 `process.md` is prose for a reviewer, not code: which inputs and states you
 considered, what you rejected and why, which decision the result supports,
@@ -455,9 +464,11 @@ right answer by an unexpected method should still pass.
   Explain how you settled on the numbers in `verification_explanation` in
   `task.toml`.
 
-Your tests run in the same offline machine, after the fact, so they cannot
-download anything or call a live service. As with the solution, import the
-libraries you need and let the task-fixer sort out installing them.
+Your tests run on the same machine, after the fact. Unlike the solution, they
+should grade from your own copy of the data in `task/tests/data/` rather than
+calling a live service: a slow or changed remote response would make grading
+non-deterministic. They must never install anything. As with the solution,
+import the libraries you need and let the task-fixer sort out installing them.
 
 ### 4.6 Complete `task.toml` deliberately
 
@@ -573,9 +584,9 @@ solution can pass a broken verifier.
 ## 8. Run the Docker smoke test
 
 After task-review passes, run the local smoke test. It builds the task's
-`environment/Dockerfile`, runs `solution/solve.sh`, runs `tests/test.sh` in an
-offline Linux/amd64 Docker container, and preserves verifier logs and copied
-outputs under `task/.runner-logs/`:
+`environment/Dockerfile`, runs `solution/solve.sh`, runs `tests/test.sh` in a
+Linux/amd64 Docker container that follows the task's `network_mode`, and
+preserves verifier logs and copied outputs under `task/.runner-logs/`:
 
 ```bash
 ./harbor_runner.py task --no-remote --smoke-test

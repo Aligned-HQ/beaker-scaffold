@@ -16,8 +16,8 @@ output in a local Docker container, and never contacts Workbench or Modal.
 Preflight requires explicit
 `FROM --platform=linux/amd64` declarations in task Dockerfiles and rejects
 prebuilt image manifests that are not a single Linux/amd64 image. The source
-task must declare `[environment].network_mode = "no-network"`; normal runs
-create an offline Oracle snapshot and a separate agent snapshot with
+task must declare `[environment].network_mode = "public"`; normal runs create a
+separate Oracle snapshot and agent snapshot, both with
 `network_mode = "public"`.
 
 Examples:
@@ -155,6 +155,9 @@ def print_runner_panel(
 DEFAULT_CONCURRENCY = 1
 DEFAULT_REPEATS = 4
 MODAL_PLATFORM = "linux/amd64"
+# Client policy: the Oracle and the agent trials both run with public network.
+DEFAULT_NETWORK_MODE = "public"
+SUPPORTED_NETWORK_MODES = ("public", "no-network")
 MODAL_APP_NAME_PREFIX = "beaker"
 MODAL_RUN_MANIFEST_SUFFIX = ".modal-run.json"
 QUICK_AGENT_CHOICES = ("auto", "claude", "claude-code", "codex")
@@ -499,10 +502,11 @@ def resolve_single_task(path: Path) -> Path:
 
 def set_snapshot_network_mode(task_root: Path, network_mode: str) -> None:
     """Set the generated snapshot's network policy without touching the source task."""
-    if network_mode not in {"no-network", "public"}:
+    if network_mode not in set(SUPPORTED_NETWORK_MODES):
+        expected = " or ".join(f'"{mode}"' for mode in SUPPORTED_NETWORK_MODES)
         raise SystemExit(
             f"error: unsupported snapshot network_mode {network_mode!r}; "
-            'expected "no-network" or "public"'
+            f"expected {expected}"
         )
     config_path = task_root / "task.toml"
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -546,7 +550,7 @@ def snapshot_task_root(
     run_id: str,
     snapshot_label: str = "task-snapshot",
     *,
-    network_mode: str | None = None,
+    network_mode: str | None = DEFAULT_NETWORK_MODE,
 ) -> Path:
     """Create an immutable copy of the single task for this Harbor run."""
 
@@ -2595,6 +2599,24 @@ def load_toml(path: Path) -> dict:
     return value
 
 
+def task_network_mode(task_root: Path) -> str:
+    """Read the task's declared network policy, defaulting to the client policy."""
+    environment = load_toml(task_root / "task.toml").get("environment")
+    mode = environment.get("network_mode") if isinstance(environment, dict) else None
+    if not isinstance(mode, str) or mode not in set(SUPPORTED_NETWORK_MODES):
+        return DEFAULT_NETWORK_MODE
+    return mode
+
+
+def docker_network_args(network_mode: str) -> list[str]:
+    """Map a task network_mode onto local `docker run` networking flags.
+
+    `public` keeps Docker's default bridge network so a local container matches
+    the Oracle and agent snapshots the runner submits to Harbor.
+    """
+    return ["--network", "none"] if network_mode == "no-network" else []
+
+
 @dataclass(frozen=True)
 class SmokeProject:
     """The task paths needed by the local Docker smoke test."""
@@ -2720,7 +2742,7 @@ def run_smoke_container(
     keep_container: bool,
     env: dict[str, str],
 ) -> int:
-    """Run the reference solution and verifier locally in one offline container."""
+    """Run the reference solution and verifier locally in one container."""
     container_name = f"comp-smoke-{uuid4().hex[:12]}"
     entrypoint = (
         "set -o pipefail; "
@@ -2742,8 +2764,7 @@ def run_smoke_container(
         "run",
         "--platform",
         MODAL_PLATFORM,
-        "--network",
-        "none",
+        *docker_network_args(task_network_mode(project.root)),
         "--name",
         container_name,
         "-v",
@@ -3116,7 +3137,7 @@ def run_quick_verifier_container(
     args: argparse.Namespace,
     timeout_sec: float,
 ) -> int:
-    """Run the verifier locally with no network and no Modal involvement."""
+    """Run the verifier locally with the task's network policy and no Modal."""
     logs_dir = trial.trial_dir / "verifier"
     logs_dir.mkdir(parents=True, exist_ok=True)
     container_name = f"comp-quick-{uuid4().hex[:12]}"
@@ -3125,8 +3146,7 @@ def run_quick_verifier_container(
         "run",
         "--platform",
         MODAL_PLATFORM,
-        "--network",
-        "none",
+        *docker_network_args(task_network_mode(project.root)),
         "--name",
         container_name,
         "-v",
@@ -3327,7 +3347,10 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
         f"task root: {task_root}",
         f"workspace: {trial.workspace_dir}",
         f"verifier:  local Docker ({image_description})",
-        "network:   host agent as configured; verifier container has --network none",
+        (
+            "network:   host agent as configured; verifier container follows "
+            f"network_mode={task_network_mode(project.root)}"
+        ),
         f"job:       {trial.job_dir}",
         f"log:       {trial.runner_log}",
     ]
@@ -3811,7 +3834,7 @@ def validate_modal_task_policy(
     tasks: list[Path],
     backend: str,
     *,
-    expected_network_mode: str = "no-network",
+    expected_network_mode: str = DEFAULT_NETWORK_MODE,
 ) -> None:
     """Validate the network and Modal image contract for a task snapshot."""
     if backend != "modal":
@@ -3830,9 +3853,9 @@ def validate_modal_task_policy(
             continue
         if environment.get("network_mode") != expected_network_mode:
             policy = (
-                "agent execution policy"
+                "Oracle and agent execution policy"
                 if expected_network_mode == "public"
-                else "Oracle offline policy"
+                else "requested offline policy"
             )
             errors.append(
                 f'{config_path}: [environment].network_mode must be "{expected_network_mode}" '
@@ -5830,7 +5853,8 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help=(
             "Build the task environment image and run solution/verification locally "
-            "in an offline Docker container; do not start Harbor or Modal jobs."
+            "in a Docker container that follows the task's network_mode; do not "
+            "start Harbor or Modal jobs."
         ),
     )
     parser.add_argument(
@@ -5944,8 +5968,8 @@ def main(argv: list[str]) -> int:
         default=True,
         help=(
             "Create separate immutable Oracle and agent snapshots before invoking "
-            'Harbor; the Oracle snapshot uses network_mode = "no-network" and the '
-            'agent snapshot uses network_mode = "public" (default: enabled).'
+            'Harbor; both snapshots use network_mode = "public" '
+            "(default: enabled)."
         ),
     )
     args = parser.parse_args(argv)
@@ -6055,13 +6079,13 @@ def main(argv: list[str]) -> int:
                 jobs_dir,
                 args.run_id,
                 snapshot_label="oracle-task-snapshot",
-                network_mode="no-network",
+                network_mode=DEFAULT_NETWORK_MODE,
             )
             oracle_snapshot_root = oracle_task_root
             validate_modal_task_policy(
                 [oracle_task_root],
                 args.env,
-                expected_network_mode="no-network",
+                expected_network_mode=DEFAULT_NETWORK_MODE,
             )
             if not args.oracle_sort:
                 agent_task_root = snapshot_task_root(
@@ -6069,13 +6093,13 @@ def main(argv: list[str]) -> int:
                     jobs_dir,
                     args.run_id,
                     snapshot_label="agent-task-snapshot",
-                    network_mode="public",
+                    network_mode=DEFAULT_NETWORK_MODE,
                 )
                 agent_snapshot_root = agent_task_root
                 validate_modal_task_policy(
                     [agent_task_root],
                     args.env,
-                    expected_network_mode="public",
+                    expected_network_mode=DEFAULT_NETWORK_MODE,
                 )
 
     if args.oracle_sort:
@@ -6091,7 +6115,8 @@ def main(argv: list[str]) -> int:
         ]
         if oracle_snapshot_root is not None:
             oracle_overview.append(
-                f"Oracle snapshot: {oracle_snapshot_root} (network_mode=no-network)"
+                f"Oracle snapshot: {oracle_snapshot_root} "
+                f"(network_mode={DEFAULT_NETWORK_MODE})"
             )
         oracle_overview.extend(
             [
@@ -6196,9 +6221,13 @@ def main(argv: list[str]) -> int:
         f"task root: {task_root}",
     ]
     if oracle_snapshot_root is not None:
-        run_overview.append(f"Oracle snapshot: {oracle_snapshot_root} (network_mode=no-network)")
+        run_overview.append(
+            f"Oracle snapshot: {oracle_snapshot_root} (network_mode={DEFAULT_NETWORK_MODE})"
+        )
     if agent_snapshot_root is not None:
-        run_overview.append(f"agent snapshot:  {agent_snapshot_root} (network_mode=public)")
+        run_overview.append(
+            f"agent snapshot:  {agent_snapshot_root} (network_mode={DEFAULT_NETWORK_MODE})"
+        )
     run_overview.extend(
         [
             f"tasks:     {num_tasks}",

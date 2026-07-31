@@ -31,7 +31,10 @@ copies only `environment/data/`, creates the non-root `agent` user, and has no
 networked package or agent-bootstrap step. The verifier Dockerfile copies its
 existing test files and data, installs its vendored wheels with
 `--no-index --find-links`, and creates the verifier log and output directories.
-The task metadata disables internet access and sets `network_mode = "no-network"`.
+The task metadata sets `network_mode = "public"`, the client default for the
+Oracle and the agent trials, so both can query scientific databases and tools
+over HTTP. The image still vendors every Python dependency: the network is for
+the science, not for installing the toolchain.
 
 The environment image also installs the verifier's wheels. The Nexus sandbox
 runs a single container and ignores `[verifier].environment_mode`, so anything

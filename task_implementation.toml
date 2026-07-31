@@ -138,13 +138,15 @@ PASS if tests verify behavior through execution, API calls, or output checking. 
 
 [[criteria]]
 name = "deterministic_reproducible"
-description = "Consistent results across runs with pinned dependencies and no live service dependencies"
+description = "Consistent results across runs with vendored, pinned dependencies and stable data sources"
 guidance = """
-Tasks must produce consistent results across runs. All Python/pip dependencies should be pinned to specific versions. Apt packages should not be pinned. Tasks must not depend on live external services, APIs, or network resources that could change or become unavailable.
+Tasks must produce consistent results across runs. All Python/pip dependencies should be pinned to specific versions and vendored into the image. Apt packages should not be pinned. No build or run step may install a package.
+
+Tasks run with network_mode = "public", so the oracle and the agent may query scientific databases and tools over HTTP. Such a call is acceptable when the queried record is stable and the verifier still grades deterministically: the answer key lives in tests/data/, and tolerances absorb any drift in a live response. A task whose result changes with an unstable or versionless remote response, or whose verifier depends on a live service, is not reproducible.
 
 For stochastic tasks, validation should use sufficient trial runs (100+) to ensure reliability. One oracle solution that fails 28 of 1,000 test runs is not acceptable.
 
-PASS if dependencies are pinned, no live services are required, and results are consistent across runs. FAIL if external dependencies are unpinned, the task relies on live services, or results vary between runs."""
+PASS if dependencies are pinned and vendored, any HTTP data source is stable and graded deterministically, and results are consistent across runs. FAIL if dependencies are unpinned or installed at run time, the verifier depends on a live service, or results vary between runs."""
 
 [[criteria]]
 name = "essential_difficulty"

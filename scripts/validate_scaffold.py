@@ -232,9 +232,9 @@ class Checker:
             if not valid_resource:
                 self.error(f"[environment].{key} must be positive")
         network_mode = environment.get("network_mode") if isinstance(environment, dict) else None
-        if network_mode != "no-network":
+        if network_mode != "public":
             self.error(
-                f'[environment].network_mode must be "no-network", found "{network_mode}"'
+                f'[environment].network_mode must be "public", found "{network_mode}"'
             )
         return config
 

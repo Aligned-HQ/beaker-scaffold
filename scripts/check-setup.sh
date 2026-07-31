@@ -360,7 +360,7 @@ else
     fail_check "Skill reports directory or skill-status.md is missing or not writable." "Restore writable skill-reports/ and skill-status.md so skill wrappers can save Markdown results and status updates."
 fi
 
-info_check 'Client policy: task environments must set network_mode = "no-network".'
+info_check 'Client policy: task environments must set network_mode = "public" for the Oracle and the agent trials.'
 info_check "Client policy: measure each built runtime/verifier image with docker image inspect and keep it <= 2,000,000,000 bytes."
 info_check "This check does not build images, authenticate agent CLIs, or contact network services."
 
