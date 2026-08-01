@@ -2,7 +2,8 @@
 """Validate the editable task scaffold before an authoring or review run.
 
 The checker is deliberately static and dependency-free. It catches missing
-layout files, invalid TOML, common Docker build-context mistakes, leaked host
+layout files, invalid TOML, a task name Harbor cannot schedule, common Docker
+build-context mistakes, leaked host
 paths, missing canonical environment variables, reward-file hazards, and common
 undeclared CPU/GPU resource use. It validates that the expert-time field is
 well-formed; task-review assesses whether its value is scientifically plausible.
@@ -51,6 +52,11 @@ PLACEHOLDER_MARKERS = (
     "<task",
     "<project",
 )
+
+# Harbor expects a namespaced package name. It resolves a bare name as a dataset
+# path, finds no valid child tasks under it, and aborts with "Either datasets or
+# tasks must be provided" before the Oracle trial starts.
+TASK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 
 HOST_PATH_RE = re.compile(r"/(?:Users|Volumes|home)/[^\s'\"`]+")
 BAD_ENV_COPY_RE = re.compile(r"^\s*COPY\s+(?:environment|tests|solution)(?:/|\s)", re.MULTILINE)
@@ -208,6 +214,8 @@ class Checker:
             or not task_config.get("description")
         ):
             self.error("task/task.toml needs [task].name and [task].description")
+        else:
+            self.check_task_name(task_config["name"])
 
         metadata = config.get("metadata", {})
         if not isinstance(metadata, dict):
@@ -279,6 +287,31 @@ class Checker:
                 f'[environment].network_mode must be "public", found "{network_mode}"'
             )
         return config
+
+    def check_task_name(self, name: Any) -> None:
+        """Require the "org/name" package name Harbor needs to schedule the task."""
+        if not isinstance(name, str):
+            self.error("[task].name must be a string in org/name form")
+            return
+        slashes = name.count("/")
+        if slashes == 0:
+            self.error(
+                f'[task].name must be namespaced as "org/name", found "{name}"; '
+                "Harbor reads a bare name as a dataset path, finds no child tasks, "
+                'and aborts the run with "Either datasets or tasks must be '
+                'provided" before the Oracle trial starts'
+            )
+            return
+        if slashes > 1:
+            self.error(
+                f'[task].name must contain exactly one "/", found "{name}"'
+            )
+            return
+        if not TASK_NAME_RE.fullmatch(name):
+            self.warn(
+                f'[task].name "{name}" should use lowercase segments limited to '
+                "letters, digits, dot, underscore, and hyphen"
+            )
 
     def _resource_source_files(self) -> list[Path]:
         """Return code/build files where implicit resource use is meaningful."""

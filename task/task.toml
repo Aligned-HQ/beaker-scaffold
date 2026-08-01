@@ -6,7 +6,7 @@ artifacts = [
 ]
 
 [task]
-name = "replace-me/scientific-analysis"
+name = "aligned/replace_me_scientific-analysis"
 description = "Starter template for a reproducible scientific analysis task; replace the placeholder contract before use."
 
 [metadata]
