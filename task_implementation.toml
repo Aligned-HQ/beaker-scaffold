@@ -6,7 +6,7 @@ All tasks must be verifiable. The verification must be efficient and reliable �
 
 The task must have concrete, checkable outputs — such as numerical results, generated files, statistical fits, or reproducible data — that can be verified programmatically against a reference solution. We are not looking for open-ended tasks like hypothesis generation or literature review.
 
-The verifier needs to be almost perfect, but not provably perfect. Using LLM-as-a-judge is permissible in rare and extraordinary circumstances, but only if it can be shown that the verifier essentially never makes a mistake. One way to show this is by having multiple different LLMs always make the same determination. It must be documented what alternate approaches could have substituted for LLM-as-a-judge and why those are insufficient.
+Using LLM-as-a-judge is permissible in rare and extraordinary circumstances, but only if it can be shown that the verifier essentially never makes a mistake. One way to show this is by having multiple different LLMs always make the same determination. It must be documented what alternate approaches could have substituted for LLM-as-a-judge and why those are insufficient.
 
 Reject tasks where there is no way to verify the task has been solved or where grading is subjective (e.g., "summarize the existing literature on this scientific topic"). PASS if the verifier is deterministic, reliable, and programmatic with concrete scientific outputs. FAIL if verification depends on subjective judgment, is non-deterministic, or uses LLM-as-a-judge without documented justification."""
 
