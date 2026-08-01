@@ -27,3 +27,9 @@ Docker or the agent. While the host agent is running in a terminal, the runner
 shows an in-place `Agent running...` spinner refreshed at 8 FPS. Redirected
 output uses `--progress-interval-sec` (30 seconds by default) for newline
 heartbeats; the full agent transcript is in the printed runner log.
+
+The trial's `result.json` records `timing.agent_elapsed_sec`,
+`timing.verifier_elapsed_sec`, and `timing.total_elapsed_sec`. Use these as
+separate observations in task-review for agent timeout behavior,
+infrastructure diagnosis, and reproducibility. They must not be compared with
+`metadata.expert_time_estimate_hours` or used as a proxy for human duration.

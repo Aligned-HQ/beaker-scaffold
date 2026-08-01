@@ -134,7 +134,20 @@ Tests should verify actual behavior by executing code and checking outputs, not 
 
 Good tests execute the agent's code, call its APIs, or check its outputs. Bad tests grep for function names, check if certain imports exist, or match regex patterns against source files.
 
-PASS if tests verify behavior through execution, API calls, or output checking. FAIL if tests primarily rely on string matching, keyword scanning, or source code pattern detection."""
+Do not use scientific content as an undisclosed keyword gate. A verifier must not
+require a particular literature reference, author name, paper title, citation,
+or domain-specific term unless instruction.md explicitly asks for that item or
+term as part of the required output or defines it as an evaluated fact. Even
+when such content is requested, check the disclosed scientific outcome or
+structured field rather than rewarding a string that can be pasted into an
+otherwise incorrect answer. A scientifically correct result must not fail
+because it uses different terminology, cites a different defensible source, or
+omits an unrequested reference.
+
+PASS if tests verify behavior through execution, API calls, or output checking,
+and do not impose undisclosed literature, author, or terminology requirements.
+FAIL if tests primarily rely on string matching, keyword scanning, source-code
+pattern detection, or hidden scientific-content gating."""
 
 [[criteria]]
 name = "deterministic_reproducible"
@@ -168,7 +181,21 @@ For optimization tasks where the instruction asks the agent to do as well as pos
 
 The standard timeout + anti-cheat trailer ("You have X seconds... Do not cheat...") appended to every instruction is enforced by the harness, not by tests — ignore it when evaluating this criterion.
 
-PASS if every test assertion traces back to a requirement in the instruction and every instruction requirement is tested. FAIL if tests introduce requirements that contradict or go beyond what the instruction describes, or if the instruction describes requirements that are not tested."""
+As part of this mapping, perform a verifier self-consistency audit. Inventory
+every assertion that can affect pass/fail, including assertions in helper
+functions and fixtures, and check that their conjunction is satisfiable. Compare required methods,
+output schemas, filenames, units, ranges, tolerances, labels, and decision
+rules across tests. Flag contradictions such as one assertion requiring
+Method A's format while another rejects the result unless Method B was used,
+incompatible inequalities or units, mutually exclusive keys, or a test that
+requires a field another test forbids. A private fixture or an independently
+recomputed value is not a contradiction by itself.
+
+PASS if every test assertion traces back to a requirement in the instruction,
+the assertions are mutually consistent, and every instruction requirement is
+tested. FAIL if tests introduce requirements that contradict or go beyond what
+the instruction describes, if two assertions cannot be satisfied together, or
+if the instruction describes requirements that are not tested."""
 
 [[criteria]]
 name = "novel"
@@ -351,9 +378,21 @@ If values are unchanged from defaults, flag whether the author considered them �
 - Agent timeout should reflect the expected difficulty.
 - Environment resources (cpus, memory_mb, storage_mb, gpus) should match the task's actual computational needs.
 
+Inspect the solution, verifier, dependency manifests, and Dockerfiles for
+implicit resource requirements. GPU calls, CUDA/NVIDIA base images, accelerator
+packages, unbounded worker counts, MPI, or thread/process pools must either fit
+the declared resources or be changed/documented. In particular, do not treat
+`gpus = 0` as compatible with a required CUDA path, and do not request more
+workers than the declared CPU allocation without an explicit reason.
+
 Tasks should be hard for the agent, not for the computer. If a task increases CPUs, memory, or storage significantly, the difficulty should come from the reasoning and problem-solving required, not from trivially making the task more computationally intense. Reworking the task to use fewer resources while preserving the intellectual challenge is preferred.
 
-PASS if timeouts and resources are appropriate for the task's actual requirements and difficulty comes from reasoning, not computation. FAIL if timeouts are clearly too short or too long, resources are excessive without justification, or difficulty stems primarily from computational intensity rather than intellectual challenge."""
+PASS if timeouts and resources are appropriate for the task's actual
+requirements, implicit CPU/GPU dependencies are declared, and difficulty comes
+from reasoning rather than computation. FAIL if timeouts are clearly too short
+or too long, resources are excessive without justification, a required
+accelerator or worker allocation is undeclared, or difficulty stems primarily
+from computational intensity rather than intellectual challenge."""
 
 [[criteria]]
 name = "task_readme"
@@ -369,9 +408,15 @@ PASS if the README provides useful context not found elsewhere, or if no README 
 name = "expert_time_estimate"
 description = "Expert time estimate is provided and plausible for the task"
 guidance = """
-The expert_time_estimate_hours field should reflect how long a domain expert with all the prerequisite knowledge, perfect focus, and typing quickly would take to solve this task. This is a best-case human estimate, not an average — think of an expert who sat down with caffeine and worked straight through. This helps calibrate task difficulty and set appropriate agent timeouts.
+The expert_time_estimate_hours field should reflect how long a domain expert with all the prerequisite knowledge, perfect focus, and typing quickly would take to solve this task. This is a best-case human estimate, not an average — think of an expert who sat down with caffeine and worked straight through. It is a human-task calibration datum and must be assessed independently from model execution time.
 
-The template default is 0 — if unchanged, the author likely forgot to set it. The estimate should be consistent with the task's difficulty_explanation and the agent timeout. For example, a task described as requiring deep expertise but estimated at 0.5 hours is suspicious, as is a trivial-sounding task estimated at 40 hours.
+The template default is 0 — if unchanged, the author likely forgot to set it. The estimate should be consistent with the task's difficulty_explanation and scientific scope. For example, a task described as requiring deep expertise but estimated at 0.5 hours is suspicious, as is a trivial-sounding task estimated at 40 hours. The static scaffold check validates only that the field is finite and positive; task-review must make the substantive plausibility judgment from the scientific scope and evidence.
+
+After agent trials, report observed model wall time separately from verifier and
+container time. Use model timing only to assess agent timeout behavior,
+infrastructure problems, and reproducibility; never compare it with the human
+estimate or use it to infer how long an expert would take. Note runs that
+stopped at a timeout or failed for infrastructure reasons.
 
 PASS if the estimate is provided, non-zero, and plausible given the task description and difficulty. FAIL if the estimate is 0 (default unchanged), missing, or clearly inconsistent with the task's actual complexity."""
 

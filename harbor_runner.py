@@ -3203,6 +3203,9 @@ def write_quick_trial_result(
     verifier_returncode: int | None,
     reward: float | None,
     exception: tuple[str, str] | None,
+    agent_elapsed_sec: float | None,
+    verifier_elapsed_sec: float | None,
+    total_elapsed_sec: float,
 ) -> Path:
     payload: dict[str, object] = {
         "task_id": {"path": str(task_root.resolve())},
@@ -3215,6 +3218,17 @@ def write_quick_trial_result(
         "verifier_result": {
             "rewards": {"reward": reward},
             "returncode": verifier_returncode,
+        },
+        "timing": {
+            "agent_elapsed_sec": (
+                round(agent_elapsed_sec, 3) if agent_elapsed_sec is not None else None
+            ),
+            "verifier_elapsed_sec": (
+                round(verifier_elapsed_sec, 3)
+                if verifier_elapsed_sec is not None
+                else None
+            ),
+            "total_elapsed_sec": round(total_elapsed_sec, 3),
         },
     }
     if exception is not None:
@@ -3388,11 +3402,15 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
         QUICK_DEFAULT_VERIFIER_TIMEOUT_SEC,
     )
     started_clock = time.time()
+    total_started_clock = time.monotonic()
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     agent_returncode = 2
     verifier_returncode: int | None = None
     exception: tuple[str, str] | None = None
     interrupted = False
+    agent_started_clock: float | None = None
+    agent_elapsed_sec: float | None = None
+    verifier_elapsed_sec: float | None = None
     image_tag = ""
     remove_image = False
 
@@ -3426,7 +3444,8 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
                 )
                 with PROCESS_LOCK:
                     RUNNING_PROCESSES[trial.job_name] = process
-                agent_started = time.monotonic()
+                agent_started_clock = time.monotonic()
+                agent_started = agent_started_clock
                 progress_interval = getattr(
                     args,
                     "progress_interval_sec",
@@ -3547,6 +3566,8 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
                 if process is not None:
                     with PROCESS_LOCK:
                         RUNNING_PROCESSES.pop(trial.job_name, None)
+                if agent_started_clock is not None:
+                    agent_elapsed_sec = time.monotonic() - agent_started_clock
             log.write(f"\nagent exit: {agent_returncode}\n")
             log.flush()
     finally:
@@ -3556,6 +3577,7 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
             shutil.copy2(trial.runner_log, transcript_dir / f"{agent}.log")
 
     if not interrupted:
+        verifier_started_clock = time.monotonic()
         try:
             verifier_returncode = run_quick_verifier_container(
                 project,
@@ -3570,6 +3592,8 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
         except (OSError, subprocess.SubprocessError) as exc:
             verifier_returncode = 2
             exception = exception or ("QuickVerifierLaunchError", str(exc))
+        finally:
+            verifier_elapsed_sec = time.monotonic() - verifier_started_clock
 
     reward_path = trial.trial_dir / "verifier" / "reward.txt"
     raw_reward = read_quick_reward(reward_path)
@@ -3596,6 +3620,7 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
     if output_dir.is_dir():
         shutil.copytree(output_dir, artifacts_dir / "output", symlinks=True)
 
+    total_elapsed_sec = time.monotonic() - total_started_clock
     write_quick_trial_result(
         trial=trial,
         task_root=task_root,
@@ -3606,6 +3631,9 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
         verifier_returncode=verifier_returncode,
         reward=reward,
         exception=exception,
+        agent_elapsed_sec=agent_elapsed_sec,
+        verifier_elapsed_sec=verifier_elapsed_sec,
+        total_elapsed_sec=total_elapsed_sec,
     )
     trial_log_lines = [
         f"run_id: {args.run_id}",
@@ -3616,6 +3644,9 @@ def run_quick_trial(task_root: Path, args: argparse.Namespace) -> int:
         f"agent_returncode: {agent_returncode}",
         f"verifier_returncode: {verifier_returncode}",
         f"reward: {reward}",
+        f"agent_elapsed_sec: {agent_elapsed_sec}",
+        f"verifier_elapsed_sec: {verifier_elapsed_sec}",
+        f"total_elapsed_sec: {total_elapsed_sec:.3f}",
     ]
     if exception:
         trial_log_lines.append(f"exception: {exception[0]}: {exception[1]}")

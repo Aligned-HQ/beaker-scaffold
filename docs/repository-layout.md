@@ -13,6 +13,7 @@ This is the file-level reference for the
 │   ├── manual-toolchain-setup.md
 │   ├── quick-local-agent-trial.md
 │   ├── repository-layout.md
+│   ├── tolerance-guidance.md       # calibrating scientific numeric tolerances
 │   └── skill-reports.md
 ├── scripts/
 │   ├── setup.sh                      # create the .venv, install deps, then check

@@ -65,6 +65,14 @@ The load-bearing relationships behind the picture:
 
 The same verifier has to be tight enough that your Oracle passing means something, and loose enough that three different agents failing means they got the science wrong rather than the filename.
 
+Verifiers are outcome checks, not scientific-content quizzes. Do not require a
+particular literature reference, author name, paper title, citation, or
+domain-specific term unless `instruction.md` explicitly asks for it as an
+evaluated output or fact. A correct result must remain valid when it uses
+different terminology or a different defensible source. Even when a reference
+or term is requested, check the disclosed scientific outcome or structured
+field, not a bare string that can be pasted into an incorrect answer.
+
 The target difficulty is important: a human expert with the stated data and
 instruction should be able to produce a correct solution, while the task
 should be difficult enough that the agents may fail or disagree. This exposes
@@ -459,6 +467,12 @@ writing — no keyword, heading, word-count, or tone tests. A report that says t
 right thing for the wrong reason should still fail, and one that reaches the
 right answer by an unexpected method should still pass.
 
+Do not turn literature references, author names, paper titles, or domain
+terminology into hidden correctness gates. Only check them when
+`instruction.md` explicitly requires the item or defines it as an evaluated
+fact; otherwise verify the requested scientific result, invariant, or decision
+through execution and output values.
+
 **Two rules decide whether a failure is fair:**
 
 - everything you check must already be stated in `instruction.md` — every
@@ -469,6 +483,10 @@ right answer by an unexpected method should still pass.
   Try to imagine a second reasonable approach and ask whether it would pass.
   Explain how you settled on the numbers in `verification_explanation` in
   `task.toml`.
+
+See [tolerance guidance](docs/tolerance-guidance.md) for a reference table and
+the required calibration notes. The examples are starting points, not
+universal scientific defaults.
 
 Your tests run on the same machine, after the fact. Unlike the solution, they
 should grade from your own copy of the data in `task/tests/data/` rather than
@@ -559,9 +577,18 @@ evidence. Pay particular attention to:
 - a concise prompt with no solution recipe;
 - actual computation in the reference solution;
 - 1:1 instruction-to-test alignment;
+- a verifier self-consistency audit: every material assertion is inventoried and
+  the assertions can be satisfied together, including their methods, schemas,
+  units, bounds, tolerances, and decision rules;
+- no undisclosed literature, author-name, citation, or terminology gates in the
+  verifier;
 - deterministic, secure, anti-cheat-resistant evaluation;
 - reviewable explanations and calibrated tolerances;
-- valid metadata, task name, resources, artifacts, and Docker layout.
+- valid metadata, task name, resources, artifacts, and Docker layout;
+- explicit CPU/GPU declarations that agree with code, dependencies, Dockerfiles,
+  and worker/thread settings; and
+- a plausible expert-time estimate assessed independently from model runtime;
+  use trajectory timing only for agent timeout and infrastructure evidence.
 
 ```bash
 ./scripts/run-task-review.sh task
@@ -662,6 +689,14 @@ Run the final strict static check after the trajectory review:
 python3 scripts/validate_scaffold.py --strict
 ```
 Resolve every failure before handoff.
+
+The static validator checks that the estimate is finite and positive and detects
+common undeclared CUDA/GPU and parallel-worker requirements. It does not try to
+infer scientific difficulty from line counts or impose a heuristic duration.
+During task-review, assess `metadata.expert_time_estimate_hours` from the
+scientific scope and reference workflow. Keep any model/agent timing separate;
+use it only for agent timeout behavior, infrastructure diagnosis, and
+reproducibility, never as a proxy for human duration.
 
 ## 12. Verify the final handoff
 

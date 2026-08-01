@@ -3,13 +3,17 @@
 
 The checker is deliberately static and dependency-free. It catches missing
 layout files, invalid TOML, common Docker build-context mistakes, leaked host
-paths, missing canonical environment variables, and reward-file hazards. It is
-not a replacement for task-fixer, task-review, Harbor, or trajectory-review.
+paths, missing canonical environment variables, reward-file hazards, and common
+undeclared CPU/GPU resource use. It validates that the expert-time field is
+well-formed; task-review assesses whether its value is scientifically plausible.
+It is not a replacement for task-fixer, task-review, Harbor, or
+trajectory-review.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import re
 import stat
 import sys
@@ -61,6 +65,28 @@ DOCKER_FROM_RE = re.compile(
     re.IGNORECASE,
 )
 VARIABLE_WORKDIR_RE = re.compile(r"^\s*WORKDIR\s+[^\n]*\$", re.IGNORECASE | re.MULTILINE)
+
+# These patterns are deliberately conservative. They flag an authoring review
+# signal; they do not try to prove that an optional CPU fallback is incorrect.
+GPU_RESOURCE_MARKERS = (
+    (re.compile(r"\bnvidia-smi\b|\bnvidia/cuda\b|\bCUDA_VISIBLE_DEVICES\b", re.IGNORECASE), "CUDA/NVIDIA runtime"),
+    (re.compile(r"\btorch\.cuda\b|\btorch\.device\(\s*['\"]cuda", re.IGNORECASE), "PyTorch CUDA path"),
+    (re.compile(r"(?:^|\n)\s*(?:import\s+cupy|from\s+cupy\s+import)\b|\bcupy[-_]cuda\b", re.IGNORECASE), "CuPy accelerator dependency"),
+    (re.compile(r"\bjax\.(?:devices|default_device)\b|\b(?:pycuda|numba\.cuda)\b", re.IGNORECASE), "Python CUDA/accelerator API"),
+    (re.compile(r"getPlatformByName\(\s*['\"]CUDA|\b(?:tensorflow-gpu|cudatoolkit|libcuda)\b", re.IGNORECASE), "CUDA-backed scientific package"),
+)
+CPU_PARALLEL_MARKERS = (
+    (re.compile(r"\b(?:multiprocessing|concurrent\.futures|joblib|ray|dask|mpi4py)\b", re.IGNORECASE), "parallel worker library"),
+    (re.compile(r"\b(?:mpirun|mpiexec|OMP_NUM_THREADS|MKL_NUM_THREADS|OPENBLAS_NUM_THREADS)\b", re.IGNORECASE), "explicit CPU/thread runtime"),
+)
+WORKER_ASSIGNMENT_RE = re.compile(
+    r"\b(?P<name>n_jobs|num_workers|workers|threads|processes|OMP_NUM_THREADS|MKL_NUM_THREADS|OPENBLAS_NUM_THREADS)\b\s*(?:=|:)\s*(?P<count>-?\d+)",
+    re.IGNORECASE,
+)
+WORKER_FLAG_RE = re.compile(
+    r"(?:--|-)\b(?P<name>n[-_]jobs|num[-_]workers|workers?|threads?|processes?)\s+(?P<count>-?\d+)\b",
+    re.IGNORECASE,
+)
 
 ALLOWED_ROOT_KEYS = {
     "schema_version",
@@ -197,7 +223,12 @@ class Checker:
                 if not str(metadata.get(key, "")).strip():
                     self.error(f"[metadata].{key} must not be empty")
             estimate = metadata.get("expert_time_estimate_hours", 0)
-            if not isinstance(estimate, (int, float)) or estimate <= 0:
+            if (
+                isinstance(estimate, bool)
+                or not isinstance(estimate, (int, float))
+                or not math.isfinite(float(estimate))
+                or estimate <= 0
+            ):
                 self.error("[metadata].expert_time_estimate_hours must be positive")
             if not metadata.get("tags"):
                 self.warn("[metadata].tags is empty")
@@ -231,12 +262,120 @@ class Checker:
                 valid_resource = False
             if not valid_resource:
                 self.error(f"[environment].{key} must be positive")
+        if not isinstance(environment, dict) or "gpus" not in environment:
+            self.error(
+                "[environment].gpus must be declared explicitly (use 0 for CPU-only tasks)"
+            )
+        else:
+            try:
+                valid_gpus = not isinstance(environment["gpus"], bool) and math.isfinite(
+                    float(environment["gpus"])
+                ) and float(environment["gpus"]) >= 0
+            except (TypeError, ValueError):
+                valid_gpus = False
+            if not valid_gpus:
+                self.error("[environment].gpus must be a non-negative number")
         network_mode = environment.get("network_mode") if isinstance(environment, dict) else None
         if network_mode != "public":
             self.error(
                 f'[environment].network_mode must be "public", found "{network_mode}"'
             )
         return config
+
+    def _resource_source_files(self) -> list[Path]:
+        """Return code/build files where implicit resource use is meaningful."""
+        roots = (self.task / "solution", self.task / "tests", self.task / "environment")
+        files: set[Path] = set()
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                relative_parts = path.relative_to(self.task).parts
+                if "data" in relative_parts or "wheels" in relative_parts:
+                    continue
+                try:
+                    if path.stat().st_size > 2_000_000:
+                        continue
+                except OSError:
+                    continue
+                files.add(path)
+        return sorted(files)
+
+    def check_implicit_resource_dependencies(self, config: dict[str, Any]) -> None:
+        """Find common undeclared GPU paths and CPU oversubscription signals."""
+        environment = config.get("environment", {})
+        if not isinstance(environment, dict):
+            return
+        try:
+            gpus = float(environment.get("gpus", 0))
+        except (TypeError, ValueError):
+            gpus = 0.0
+        try:
+            cpus = float(environment.get("cpus", 0))
+        except (TypeError, ValueError):
+            cpus = 0.0
+
+        gpu_hits: list[str] = []
+        cpu_hits: list[str] = []
+        worker_requests: list[tuple[str, int, str]] = []
+        for path in self._resource_source_files():
+            relative = path.relative_to(self.root)
+            text = path.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            for line_number, line in enumerate(lines, 1):
+                for pattern, label in GPU_RESOURCE_MARKERS:
+                    if pattern.search(line):
+                        gpu_hits.append(f"{relative}:{line_number} ({label})")
+                for pattern, label in CPU_PARALLEL_MARKERS:
+                    if pattern.search(line):
+                        cpu_hits.append(f"{relative}:{line_number} ({label})")
+                for pattern in (WORKER_ASSIGNMENT_RE, WORKER_FLAG_RE):
+                    for match in pattern.finditer(line):
+                        try:
+                            count = int(match.group("count"))
+                        except (TypeError, ValueError):
+                            continue
+                        worker_requests.append(
+                            (match.group("name"), count, f"{relative}:{line_number}")
+                        )
+
+        if gpu_hits and gpus <= 0:
+            self.warn(
+                "possible GPU dependency is not declared: "
+                + gpu_hits[0]
+                + "; [environment].gpus is 0, so declare a GPU or document and test a CPU fallback"
+            )
+        if gpu_hits and gpus > 0 and not environment.get("gpu_types"):
+            self.warn(
+                "GPU use was detected ("
+                + gpu_hits[0]
+                + ") but [environment].gpu_types is not declared; confirm accelerator portability"
+            )
+        if not gpu_hits and gpus > 0:
+            self.warn(
+                f"[environment].gpus = {gpus:g} but no common GPU use was detected in "
+                "solution, verifier, or Docker files; confirm this allocation is intentional"
+            )
+
+        for name, count, location in worker_requests:
+            if count < 0:
+                self.warn(
+                    f"{location} requests unbounded {name}={count}; cap workers/threads "
+                    f"to the declared [environment].cpus ({cpus:g})"
+                )
+            elif cpus > 0 and count > cpus:
+                self.warn(
+                    f"{location} requests {count} {name}, above the declared "
+                    f"[environment].cpus = {cpus:g}; declare more CPUs or reduce the request"
+                )
+        if cpu_hits and not worker_requests:
+            self.warn(
+                "parallel CPU execution was detected at "
+                + cpu_hits[0]
+                + "; verify that worker/thread defaults are bounded by [environment].cpus"
+            )
 
     def check_verifier_deps_in_environment(self) -> None:
         """The sandbox runs one container, so whatever test.sh imports has to be
@@ -398,7 +537,9 @@ class Checker:
 
     def run(self) -> int:
         self.check_layout()
-        self.check_toml()
+        config = self.check_toml()
+        if config:
+            self.check_implicit_resource_dependencies(config)
         self.check_verifier_deps_in_environment()
         self.check_executables()
         self.check_dockerfiles()

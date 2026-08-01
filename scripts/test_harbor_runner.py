@@ -1275,6 +1275,9 @@ def check_quick_mode_runs_host_cli_and_local_verifier() -> None:
         result = json.loads((trial_dir / "result.json").read_text(encoding="utf-8"))
         assert result["finished_at"]
         assert result["verifier_result"]["rewards"]["reward"] == 1.0
+        assert result["timing"]["agent_elapsed_sec"] >= 0
+        assert result["timing"]["verifier_elapsed_sec"] >= 0
+        assert result["timing"]["total_elapsed_sec"] >= result["timing"]["agent_elapsed_sec"]
         assert (trial_dir / "verifier" / "reward.txt").read_text(encoding="utf-8").strip() == "1"
         assert (trial_dir / "artifacts" / "output" / "result.json").is_file()
         assert (trajectories_dir / "quick" / "quick-fixture" / "claude").is_dir()

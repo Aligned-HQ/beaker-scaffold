@@ -80,18 +80,36 @@ If the folder doesn't have this layout, stop and report what's missing — do no
      already exist
    - `README.md` if present
    Read whole files when they're small enough; for larger files, read the sections needed to evaluate each criterion. Do not delegate this to a subagent if you can read the files directly — you need the contents in scope to cite line numbers.
-3. **Compare contract and verifier.** For each material test assertion, ask
+   If the repository provides `scripts/validate_scaffold.py`, run its
+   dependency-free static check against the repository root. Treat its findings
+   as evidence for the existing rubric rows; do not invent a separate
+   deployment criterion from a warning.
+3. **Audit verifier self-consistency.** Build an assertion inventory before
+   scoring. For every assertion that can affect pass/fail, including assertions
+   in helpers, fixtures, parametrized cases, and `test.sh`, record its file/line, the
+   output or input it constrains, and the predicate it applies. Compare the
+   inventory for contradictions in required methods, output schemas, filenames,
+   units, ranges, tolerances, labels, and decision rules. The conjunction of
+   assertions must be satisfiable. Flag cases such as one test requiring Method
+   A's output format while another rejects the same output unless Method B was
+   used, mutually exclusive keys, incompatible units, or overlapping bounds
+   that leave no valid result. A private fixture or independent recomputation
+   is not a contradiction by itself. Carry any finding into the relevant
+   existing criterion (usually `test_instruction_alignment`,
+   `functional_verification`, or `outcome_verified`) with citations; do not add
+   a new scorecard row.
+4. **Compare contract and verifier.** For each material test assertion, ask
    whether the requested outcome is visible in `instruction.md`. Check both
    directions: do the tests verify the important deliverables, and do they
    introduce any material requirement that a reasonable researcher could not
    infer? Do not treat a private fixture, recomputation, ordinary tolerance,
    or conventional serialization as hidden by itself.
-4. **Consider the real workflow.** For scientific criteria, identify the likely
+5. **Consider the real workflow.** For scientific criteria, identify the likely
    researcher, setting, decision, and meaningful judgment from the task files.
    Use that context as evidence for the rubric criterion, but do not create a
    separate practitioner score or fail a task merely because its data are
    synthetic or its analysis has one coherent method.
-5. **Score each criterion.** For each rubric entry, decide one of:
+6. **Score each criterion.** For each rubric entry, decide one of:
    - `PASS` — meets the guidance.
    - `FAIL` — clearly violates the guidance in a material way. Quote the
      relevant guidance clause and explain the smallest useful fix.
@@ -153,9 +171,14 @@ clear, material violation; otherwise give credit for a natural, solvable task.
 
 - **Verifiable and functional verification**: Prefer tests that execute the
   agent's output and check concrete scientific results or invariants. Reject
-  source-keyword checks, subjective prose grading, and brittle reference-only
-  comparisons. Private reference fixtures and independently recomputed values
-  are fine when they check an outcome the instruction asks for.
+  source-keyword checks, subjective prose grading, brittle reference-only
+  comparisons, and undisclosed scientific-content gates. A verifier must not
+  require a literature reference, author name, paper title, citation, or
+  domain-specific term unless `instruction.md` explicitly requests it as an
+  evaluated output or fact. Private reference fixtures and independently
+  recomputed values are fine when they check an outcome the instruction asks
+  for. Record a content-gating defect under the existing functional or
+  instruction-alignment criterion; do not create a separate row.
 - **Well specified, aligned, and structured output**: Require the goal,
   relevant inputs, material constraints, and deliverables to be understandable
   to a reasonable researcher. Every material pass/fail assertion should map to
@@ -192,6 +215,18 @@ clear, material violation; otherwise give credit for a natural, solvable task.
   specific rubric language and judge whether the values are plausible and
   useful. Treat optional material as N/A when the rubric permits it; do not add
   deployment policies or requirements from outside the rubric.
+
+For `expert_time_estimate`, make the plausibility judgment in the review itself:
+assess the number from the scientific scope, required judgment, data and
+validation burden, and reference-solution workflow. Treat it as a human-only
+estimate.
+When completed Harbor or quick-trial results exist, use their recorded
+timestamps as supporting evidence, report model/agent elapsed time separately
+from verifier and total trial time when possible, identify timeout-censored
+runs, and use those observations only to assess agent timeout behavior,
+infrastructure problems, and reproducibility. Never compare agent elapsed time
+with the human estimate or infer human duration from it. Do not replace this
+judgment with a heuristic duration test.
 
 ## What to do, not do
 

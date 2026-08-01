@@ -24,10 +24,7 @@ verification_explanation = "Replace this with an evidence-based description of t
 [verifier]
 timeout_sec = 300.0
 user = "root"
-# environment_mode is intentionally unset. The Nexus sandbox ignores it and runs
-# the agent and verifier in one container, so the verifier's dependencies live in
-# environment/Dockerfile. Setting "separate" here would pass locally and then
-# fail on submission with "No module named pytest".
+# environment_mode is intentionally unset. Do not use separate environment
 
 [agent]
 timeout_sec = 1800.0
