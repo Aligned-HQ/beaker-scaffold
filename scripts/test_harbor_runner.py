@@ -376,11 +376,15 @@ def check_remote_error_without_agent_trials_keeps_compact_evidence() -> None:
             results,
         )
         assert sorted(path.name for path in destination.iterdir()) == [
+            "oracle_exception.txt",
             "remote-results.json",
             "remote-status.json",
             "summary.md",
         ]
         assert "archive was not downloaded" in (destination / "summary.md").read_text(encoding="utf-8")
+        assert "Body is unusable: Body has already been read" in (
+            destination / "oracle_exception.txt"
+        ).read_text(encoding="utf-8")
 
 
 def check_remote_archive_extracts_evidence_without_task_files() -> None:
@@ -640,7 +644,13 @@ def check_remote_oracle_exception_downloads_archive() -> None:
                 return 200, {"state": "QUEUED"}, {}
             if method == "GET" and url.endswith("/results"):
                 return 200, {
-                    "oracle": {"verdict": "EXCEPTION", "exception": {"type": "MissingReward"}},
+                    "oracle": {
+                        "verdict": "EXCEPTION",
+                        "exception": {
+                            "type": "HarborProcessError",
+                            "message": "ValueError: Either datasets or tasks must be provided.",
+                        },
+                    },
                     "summary": {"exception_count": 1},
                 }, {}
             if method == "GET" and url.endswith("/trajectories"):
@@ -703,6 +713,8 @@ def check_remote_oracle_exception_downloads_archive() -> None:
         try:
             assert harbor_runner.run_remote(task_root, args) == 5
             assert (trajectories_dir / run_id / "oracle-exception.json").is_file()
+            exception_text = (trajectories_dir / run_id / "oracle_exception.txt").read_text(encoding="utf-8")
+            assert "ValueError: Either datasets or tasks must be provided." in exception_text
         finally:
             harbor_runner.remote_json_request = original_request
             harbor_runner.poll_remote_status = original_poll

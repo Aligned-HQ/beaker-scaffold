@@ -203,8 +203,8 @@ REMOTE_ACTIVE_STATES = {
     "AGENTS_RUNNING",
     "FINALIZING",
 }
-REMOTE_MAX_BUNDLE_BYTES = 250 * 1024 * 1024
-REMOTE_MAX_ARCHIVE_BYTES = 1_000 * 1024 * 1024
+REMOTE_MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
+REMOTE_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 REMOTE_TRAJECTORY_ARCHIVE_SCOPE = "trajectories-only"
 REMOTE_EXECUTION_POLICY_ID = "scientific-offline-v1"
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
@@ -670,8 +670,10 @@ def remote_json_request(
 class UploadProgressReader:
     """File-like request body that reports bytes as urllib hands them to HTTP."""
 
-    def __init__(self, data: bytes, on_read: Callable[[int], None]) -> None:
-        self._data = memoryview(data)
+    def __init__(self, data: bytes | Path, on_read: Callable[[int], None]) -> None:
+        self._file = data.open("rb") if isinstance(data, Path) else None
+        self._data = memoryview(data) if isinstance(data, bytes) else None
+        self._length = len(data) if isinstance(data, bytes) else data.stat().st_size
         self._position = 0
         self._on_read = on_read
 
@@ -679,31 +681,40 @@ class UploadProgressReader:
         return True
 
     def read(self, size: int = -1) -> bytes:
-        if self._position >= len(self._data):
+        if self._position >= self._length:
             return b""
-        if size is None or size < 0:
-            end = len(self._data)
+        if self._file is not None:
+            chunk = self._file.read(1024 * 1024 if size is None or size < 0 else size)
+            self._position += len(chunk)
         else:
-            end = min(len(self._data), self._position + size)
-        chunk = self._data[self._position:end].tobytes()
-        self._position = end
+            assert self._data is not None
+            end = self._length if size is None or size < 0 else min(self._length, self._position + size)
+            chunk = self._data[self._position:end].tobytes()
+            self._position = end
         self._on_read(self._position)
         return chunk
 
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
 
-def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
+
+def remote_upload(url: str, archive: bytes | Path, headers: dict[str, str]) -> None:
+    archive_size = len(archive) if isinstance(archive, bytes) else archive.stat().st_size
+    if archive_size < 1 or archive_size > REMOTE_MAX_BUNDLE_BYTES:
+        raise RemoteInputError(f"compressed task bundle exceeds {REMOTE_MAX_BUNDLE_BYTES} bytes")
     request_headers = {str(key): str(value) for key, value in headers.items()}
     if not any(key.lower() == "content-length" for key in request_headers):
         # Explicitly preserve a fixed-length PUT. Without this header urllib
         # falls back to chunked transfer for a file-like body, which many
         # signed object-storage URLs reject.
-        request_headers["Content-Length"] = str(len(archive))
+        request_headers["Content-Length"] = str(archive_size)
 
     console = runner_console()
     progress = None
     progress_task = None
     uploaded = 0
-    fallback_next_report = max(1, len(archive) // 20)
+    fallback_next_report = max(1, archive_size // 20)
 
     def report(completed: int) -> None:
         nonlocal fallback_next_report, uploaded
@@ -712,14 +723,14 @@ def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
             progress.update(progress_task, completed=completed)
         elif not RICH_AVAILABLE:
             # Keep redirected logs useful on a host where Rich is not present.
-            if completed >= fallback_next_report or completed == len(archive):
+            if completed >= fallback_next_report or completed == archive_size:
                 print(
-                    f"remote upload: {completed}/{len(archive)} bytes "
-                    f"({100.0 * completed / len(archive):.1f}%)",
+                    f"remote upload: {completed}/{archive_size} bytes "
+                    f"({100.0 * completed / archive_size:.1f}%)",
                     flush=True,
                 )
                 fallback_next_report = min(
-                    len(archive), fallback_next_report + max(1, len(archive) // 20)
+                    archive_size, fallback_next_report + max(1, archive_size // 20)
                 )
 
     if RICH_AVAILABLE and console is not None:
@@ -735,10 +746,10 @@ def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
             transient=bool(getattr(console, "is_terminal", False)),
             refresh_per_second=10,
         )
-        progress_task = progress.add_task("Uploading task bundle", total=len(archive))
+        progress_task = progress.add_task("Uploading task bundle", total=archive_size)
         progress.start()
     else:
-        print(f"remote upload: uploading {len(archive)} bytes", flush=True)
+        print(f"remote upload: uploading {archive_size} bytes", flush=True)
 
     # A signed URL is the authorization for this one object. The Workbench
     # bearer token is intentionally not sent to Storage.
@@ -749,14 +760,15 @@ def remote_upload(url: str, archive: bytes, headers: dict[str, str]) -> None:
             if response.status < 200 or response.status >= 300:
                 raise RemoteClientError(response.status, "upload_failed", "The task bundle upload failed.")
         if progress is not None and progress_task is not None:
-            progress.update(progress_task, completed=len(archive))
-        elif not RICH_AVAILABLE and uploaded != len(archive):
-            report(len(archive))
+            progress.update(progress_task, completed=archive_size)
+        elif not RICH_AVAILABLE and uploaded != archive_size:
+            report(archive_size)
     except urllib.error.HTTPError as error:
         raise RemoteClientError(error.code, "upload_failed", "The task bundle upload failed.") from None
     except (urllib.error.URLError, TimeoutError) as error:
         raise RemoteClientError(0, "network", "The task bundle upload could not reach Storage.") from error
     finally:
+        request_body.close()
         if progress is not None:
             progress.stop()
 
@@ -774,10 +786,12 @@ def remote_reject_sensitive_name(path: Path) -> None:
 def remote_scan_file(path: Path) -> None:
     remote_reject_sensitive_name(path)
     try:
+        if path.stat().st_size > 20 * 1024 * 1024:
+            return
         data = path.read_bytes()
     except OSError as error:
         raise RemoteInputError(f"could not read task file {path}: {error}") from error
-    if len(data) > 20 * 1024 * 1024 or b"\x00" in data:
+    if b"\x00" in data:
         return
     text = data.decode("utf-8", errors="ignore")
     if REMOTE_HOST_PATH_RE.search(text):
@@ -834,6 +848,60 @@ def build_remote_task_bundle(task_root: Path) -> tuple[bytes, str, int]:
         raise RemoteInputError(f"compressed task bundle exceeds {REMOTE_MAX_BUNDLE_BYTES} bytes")
     digest = f"sha256:{hashlib.sha256(data).hexdigest()}"
     return data, digest, len(data)
+
+
+def build_remote_task_bundle_file(task_root: Path, output_path: Path) -> tuple[Path, str, int]:
+    """Create and hash a task bundle without retaining the compressed bytes."""
+    root = task_root.resolve()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", root.name):
+        raise RemoteInputError("the task directory name must contain only letters, digits, '.', '_' or '-'")
+    required = (
+        root / "task.toml",
+        root / "instruction.md",
+        root / "solution",
+        root / "tests",
+        root / "environment",
+    )
+    missing = [str(item.relative_to(root)) for item in required if not item.exists()]
+    if missing:
+        raise RemoteInputError(f"task is missing required Harbor paths: {', '.join(missing)}")
+
+    output_path = output_path.resolve()
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as output:
+            with tarfile.open(fileobj=output, mode="w:gz", format=tarfile.PAX_FORMAT, dereference=False) as archive:
+                archive.add(root, arcname=root.name, recursive=False)
+                for item in sorted(root.rglob("*")):
+                    if not remote_archive_name_allowed(item, root):
+                        continue
+                    remote_reject_sensitive_name(item)
+                    if item.is_symlink():
+                        target = (item.parent / os.readlink(item)).resolve()
+                        try:
+                            target.relative_to(root)
+                        except ValueError as error:
+                            raise RemoteInputError(f"task symlink leaves the task root: {item}") from error
+                    elif item.is_file():
+                        remote_scan_file(item)
+                    archive.add(item, arcname=f"{root.name}/{item.relative_to(root).as_posix()}", recursive=False)
+    except RemoteInputError:
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        raise
+    except (OSError, tarfile.TarError) as error:
+        raise RemoteInputError(f"could not create the task bundle: {error}") from error
+
+    size = output_path.stat().st_size
+    if size > REMOTE_MAX_BUNDLE_BYTES:
+        raise RemoteInputError(f"compressed task bundle exceeds {REMOTE_MAX_BUNDLE_BYTES} bytes")
+    digest = hashlib.sha256()
+    with output_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return output_path, f"sha256:{digest.hexdigest()}", size
 
 
 def remote_agent_payload(args: argparse.Namespace) -> list[dict[str, object]]:
@@ -1384,6 +1452,7 @@ REMOTE_EVIDENCE_FILE_NAMES = {
     "remote-status.json",
     "oracle-exception.json",
     "oracle-exception.txt",
+    "oracle_exception.txt",
     "exception.json",
     "exception.txt",
     "exception.log",
@@ -1425,15 +1494,25 @@ def prune_remote_archive_to_evidence(destination: Path, run_id: str) -> None:
             path.rmdir()
 
 
-def safe_remote_extract(archive_bytes: bytes, destination: Path, run_id: str) -> int:
+def safe_remote_extract(archive_bytes: bytes | Path, destination: Path, run_id: str) -> int:
     if not re.fullmatch(r"hr_[A-Za-z0-9_-]{12,100}", run_id):
         raise RemoteClientError(0, "unsafe_archive", "The trajectory archive run id is invalid.")
-    if not archive_bytes.startswith(b"\x1f\x8b"):
+    if isinstance(archive_bytes, Path):
+        try:
+            with archive_bytes.open("rb") as probe:
+                magic = probe.read(2)
+        except OSError as error:
+            raise RemoteClientError(0, "archive_format", "The trajectory archive could not be opened.") from error
+        archive_source = {"name": str(archive_bytes)}
+    else:
+        magic = archive_bytes[:2]
+        archive_source = {"fileobj": io.BytesIO(archive_bytes)}
+    if magic != b"\x1f\x8b":
         raise RemoteClientError(0, "archive_format", "The trajectory download was not gzip-compressed.")
     members: list[tarfile.TarInfo] = []
     names: set[str] = set()
     roots: set[str] = set()
-    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+    with tarfile.open(**archive_source, mode="r:gz") as archive:
         for member in archive.getmembers():
             name = member.name
             if not name or "\\" in name or name.startswith("/"):
@@ -1559,6 +1638,8 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
         print(f"trajectory archive: already verified at {destination}", flush=True)
         return destination
     print(f"trajectory archive: downloading {size_bytes} bytes", flush=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    download_path: Path | None = None
     try:
         with urllib.request.urlopen(
             urllib.request.Request(download_url, method="GET"),
@@ -1571,43 +1652,79 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
                         raise RemoteClientError(0, "archive_too_large", "The trajectory archive exceeds the client size limit.")
                 except ValueError:
                     raise RemoteClientError(0, "archive_download", "The trajectory archive returned an invalid size.") from None
-            chunks: list[bytes] = []
-            total = 0
-            next_progress = min(REMOTE_ARCHIVE_PROGRESS_BYTES, size_bytes)
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > REMOTE_MAX_ARCHIVE_BYTES:
-                    raise RemoteClientError(0, "archive_too_large", "The trajectory archive exceeds the client size limit.")
-                chunks.append(chunk)
-                if total >= next_progress:
-                    percent = 100.0 * total / size_bytes
-                    print(
-                        f"trajectory archive: downloaded {total}/{size_bytes} bytes ({percent:.1f}%)",
-                        flush=True,
-                    )
-                    next_progress = min(size_bytes, next_progress + REMOTE_ARCHIVE_PROGRESS_BYTES)
-            archive_bytes = b"".join(chunks)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{run_id}.",
+                suffix=".tar.gz",
+                dir=destination.parent,
+                delete=False,
+            ) as output:
+                download_path = Path(output.name)
+                digest = hashlib.sha256()
+                total = 0
+                next_progress = min(REMOTE_ARCHIVE_PROGRESS_BYTES, size_bytes)
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > REMOTE_MAX_ARCHIVE_BYTES:
+                        raise RemoteClientError(0, "archive_too_large", "The trajectory archive exceeds the client size limit.")
+                    output.write(chunk)
+                    digest.update(chunk)
+                    if total >= next_progress:
+                        percent = 100.0 * total / size_bytes
+                        print(
+                            f"trajectory archive: downloaded {total}/{size_bytes} bytes ({percent:.1f}%)",
+                            flush=True,
+                        )
+                        next_progress = min(size_bytes, next_progress + REMOTE_ARCHIVE_PROGRESS_BYTES)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        if download_path is not None:
+            try:
+                download_path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
         raise RemoteClientError(0, "archive_download", "The trajectory archive download failed.") from error
-    if len(archive_bytes) != size_bytes:
-        raise RemoteClientError(0, "archive_size", "The trajectory archive size did not match its manifest.")
-    actual = f"sha256:{hashlib.sha256(archive_bytes).hexdigest()}"
-    if actual != sha256:
-        raise RemoteClientError(0, "archive_checksum", "The trajectory archive checksum did not match the manifest.")
-    count = safe_remote_extract(archive_bytes, destination, run_id)
-    if count != expected_entries:
-        raise RemoteClientError(0, "archive_manifest", "The trajectory archive entry count did not match its manifest.")
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f"{sha256}\n", encoding="utf-8")
-    print(
-        f"trajectory archive: verified server archive ({count} entries); "
-        f"retained trajectory/exception evidence at {destination}",
-        flush=True,
-    )
-    return destination
+    except RemoteClientError:
+        if download_path is not None:
+            try:
+                download_path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+        raise
+    except OSError as error:
+        if download_path is not None:
+            try:
+                download_path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+        raise RemoteClientError(0, "archive_download", "The trajectory archive download failed.") from error
+    try:
+        if download_path is None or total != size_bytes:
+            raise RemoteClientError(0, "archive_size", "The trajectory archive size did not match its manifest.")
+        actual = f"sha256:{digest.hexdigest()}"
+        if actual != sha256:
+            raise RemoteClientError(0, "archive_checksum", "The trajectory archive checksum did not match its manifest.")
+        count = safe_remote_extract(download_path, destination, run_id)
+        if count != expected_entries:
+            raise RemoteClientError(0, "archive_manifest", "The trajectory archive entry count did not match its manifest.")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{sha256}\n", encoding="utf-8")
+        print(
+            f"trajectory archive: verified server archive ({count} entries); "
+            f"retained trajectory/exception evidence at {destination}",
+            flush=True,
+        )
+        return destination
+    finally:
+        if download_path is not None:
+            try:
+                download_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
 
 def promote_remote_trajectory_archive(
@@ -1790,6 +1907,65 @@ def cleanup_remote_archive_download(base_dir: Path, run_id: str) -> None:
         marker.unlink()
 
 
+def remote_exception_detail(
+    status: dict[str, object],
+    results: dict[str, object],
+) -> tuple[str | None, str]:
+    """Return the most useful bounded diagnostic from a remote failure."""
+    status_error = status.get("error") if isinstance(status.get("error"), dict) else {}
+    oracle = results.get("oracle") if isinstance(results.get("oracle"), dict) else {}
+    oracle_error = oracle.get("exception") if isinstance(oracle.get("exception"), dict) else {}
+    sources = (
+        (oracle_error, status_error)
+        if status.get("state") == "ORACLE_EXCEPTION"
+        else (status_error, oracle_error)
+    )
+    for source in sources:
+        message = source.get("message")
+        if isinstance(message, str) and message.strip():
+            error_type = source.get("type")
+            return (error_type.strip() if isinstance(error_type, str) and error_type.strip() else None, message.strip()[:4000])
+    for source in sources:
+        error_type = source.get("type")
+        if isinstance(error_type, str) and error_type.strip():
+            return error_type.strip()[:160], "The remote Harbor service returned an exception without a diagnostic message."
+    return None, f"The remote Harbor service ended in {status.get('state') or 'ERROR'} without a diagnostic message."
+
+
+def remote_exception_evidence_text(
+    run_id: str,
+    status: dict[str, object],
+    results: dict[str, object],
+) -> str:
+    """Render the server diagnostic saved as local Oracle exception evidence."""
+    error_type, message = remote_exception_detail(status, results)
+    lines = [
+        f"Harbor run: {run_id}",
+        f"State: {status.get('state') or 'ERROR'}",
+        f"Terminal reason: {status.get('terminal_reason') or 'unknown'}",
+    ]
+    if error_type:
+        lines.append(f"Type: {error_type}")
+    lines.extend(("", message, ""))
+    return "\n".join(lines)
+
+
+def write_remote_exception_text(
+    archive_destination: Path,
+    run_id: str,
+    status: dict[str, object],
+    results: dict[str, object],
+) -> None:
+    """Save the server diagnostic in the local exception evidence file."""
+    try:
+        (archive_destination / "oracle_exception.txt").write_text(
+            remote_exception_evidence_text(run_id, status, results),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise RemoteClientError(0, "archive_write", "Could not save the remote exception evidence.") from error
+
+
 def write_remote_oracle_exception_evidence(
     archive_destination: Path,
     run_id: str,
@@ -1798,8 +1974,6 @@ def write_remote_oracle_exception_evidence(
 ) -> None:
     """Ensure an Oracle exception remains inspectable in the local archive."""
     evidence_path = archive_destination / "oracle-exception.json"
-    if evidence_path.exists():
-        return
     oracle = results.get("oracle") if isinstance(results.get("oracle"), dict) else {}
     evidence = {
         "run_id": run_id,
@@ -1808,9 +1982,11 @@ def write_remote_oracle_exception_evidence(
         "oracle": oracle,
     }
     try:
-        evidence_path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        if not evidence_path.exists():
+            evidence_path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     except OSError as error:
         raise RemoteClientError(0, "archive_write", "Could not save the Oracle exception evidence.") from error
+    write_remote_exception_text(archive_destination, run_id, status, results)
 
 
 def remote_results_have_agent_trials(results: dict[str, object]) -> bool:
@@ -1870,6 +2046,7 @@ def write_remote_error_evidence(
             )
         )
         (destination / "summary.md").write_text(summary_text, encoding="utf-8")
+        write_remote_exception_text(destination, run_id, status, results)
     except (OSError, TypeError, ValueError) as error:
         raise RemoteClientError(0, "archive_write", "Could not save remote error evidence.") from error
     return destination
@@ -2055,6 +2232,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
     base: str | None = None
     token = ""
     run_id: str | None = None
+    bundle_temp_dirs: list[tempfile.TemporaryDirectory[str]] = []
     try:
         if args.env != "modal":
             raise RemoteInputError("--remote requires --env modal")
@@ -2095,7 +2273,12 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             run_id = local_id
         if run_id is None:
             print(f"remote submit: packaging task {task_root.resolve()}", flush=True)
-            archive, bundle_sha256, bundle_size = build_remote_task_bundle(task_root)
+            bundle_temp = tempfile.TemporaryDirectory(prefix="workbench-remote-bundle-")
+            bundle_temp_dirs.append(bundle_temp)
+            archive, bundle_sha256, bundle_size = build_remote_task_bundle_file(
+                task_root,
+                Path(bundle_temp.name) / "task.tar.gz",
+            )
             print(
                 f"remote submit: bundle ready ({bundle_size} bytes, {bundle_sha256}); "
                 f"requesting {len(agents)} agent job(s) x {args.repeats} attempt(s)",
@@ -2156,6 +2339,8 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 upload_headers = upload.get("headers") if isinstance(upload.get("headers"), dict) else {}
                 remote_upload(str(upload["url"]), archive, {str(k): str(v) for k, v in upload_headers.items()})
                 print(f"remote upload: {bundle_size} bytes verified locally ({bundle_sha256})", flush=True)
+            bundle_temp.cleanup()
+            bundle_temp_dirs.remove(bundle_temp)
             print(f"remote start: enqueueing {run_id}", flush=True)
             try:
                 _, started, _ = remote_json_request(
@@ -2198,7 +2383,12 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     else:
                         raise
                 if started is None:
-                    archive, bundle_sha256, bundle_size = build_remote_task_bundle(task_root)
+                    bundle_temp = tempfile.TemporaryDirectory(prefix="workbench-remote-bundle-")
+                    bundle_temp_dirs.append(bundle_temp)
+                    archive, bundle_sha256, bundle_size = build_remote_task_bundle_file(
+                        task_root,
+                        Path(bundle_temp.name) / "task.tar.gz",
+                    )
                     if bundle_sha256 != state.get("bundle_sha256"):
                         raise RemoteInputError("the local task changed after the remote run was created; submit a new run")
                     _, created, _ = remote_json_request(
@@ -2217,6 +2407,8 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     remote_upload(str(upload["url"]), archive, {str(k): str(v) for k, v in upload_headers.items()})
                     state.update({"bundle_size_bytes": bundle_size, "request_payload": request_payload})
                     save_remote_state(service_run_path, state)
+                    bundle_temp.cleanup()
+                    bundle_temp_dirs.remove(bundle_temp)
                     try:
                         _, started, _ = remote_json_request(
                             "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
@@ -2350,6 +2542,13 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                         status,
                         results,
                     )
+                elif status.get("state") == "ERROR":
+                    write_remote_exception_text(
+                        archive_destination,
+                        run_id,
+                        status,
+                        results,
+                    )
         state.update({
             "run_id": run_id,
             "service_url": base,
@@ -2394,6 +2593,9 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
     except RemoteClientError as error:
         print(f"remote service error: {error}", file=sys.stderr)
         return 5
+    finally:
+        for bundle_temp in bundle_temp_dirs:
+            bundle_temp.cleanup()
 
 
 def default_run_id() -> str:
