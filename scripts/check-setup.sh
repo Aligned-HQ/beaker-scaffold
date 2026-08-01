@@ -361,7 +361,7 @@ else
 fi
 
 info_check 'Client policy: task environments must set network_mode = "public" for the Oracle and the agent trials.'
-info_check "Client policy: measure each built runtime/verifier image with docker image inspect and keep it <= 2,000,000,000 bytes."
+info_check "Client policy: measure the built runtime image with docker image inspect and keep it <= 2,000,000,000 bytes; any optional local verifier image has the same limit."
 info_check "This check does not build images, authenticate agent CLIs, or contact network services."
 
 if ((FAILURES > 0 || (STRICT && WARNINGS > 0))); then

@@ -3912,8 +3912,6 @@ def validate_modal_task_policy(
         verifier_dockerfile = task / "tests" / "Dockerfile"
         if verifier_dockerfile.is_file():
             errors.extend(validate_amd64_dockerfile(verifier_dockerfile))
-        else:
-            errors.append(f"{task}: missing tests/Dockerfile for the verifier image")
 
     if errors:
         formatted = "\n".join(f"  - {error}" for error in errors)

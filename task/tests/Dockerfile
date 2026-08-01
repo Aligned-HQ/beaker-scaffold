@@ -1,5 +1,6 @@
-# Separate verifier image. Its build context is task/tests/, so COPY paths are
-# relative to this directory and never use a leading `tests/` or `environment/`.
+# Optional local two-image verifier fixture. Its build context is task/tests/,
+# so COPY paths are relative to this directory and never use a leading `tests/`
+# or `environment/`.
 FROM --platform=linux/amd64 python:3.12-slim
 
 ENV WORKSPACE_DIR=/workspace \

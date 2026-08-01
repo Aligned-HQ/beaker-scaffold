@@ -321,12 +321,15 @@ task/
 │   ├── solve.py or another real implementation
 │   └── process.md
 └── tests/
-    ├── Dockerfile
     ├── data/
     ├── test.sh
     ├── test_outputs.py
     └── wheels/                 # vendored verifier dependencies when needed
 ```
+
+`tests/Dockerfile` is optional. The submission sandbox runs the verifier in the
+same runtime image as the agent; keep a verifier Dockerfile only when you want
+an explicitly configured local two-image test.
 
 `solution/process.md` is required even when the reference implementation is short. It should explain the intended domain workflow, decisions, validation, and output generation without revealing hidden answers. A long implementation belongs in a separate file, not a heredoc in `solve.sh`.
 
@@ -540,7 +543,7 @@ survey the entire task and correct only task-local reproducibility and
 reviewability issues:
 
 - missing required layout files;
-- missing verifier Dockerfile or required data directories
+- missing required data directories
   when they can be derived from the existing task;
 - hardcoded workstation or staging paths;
 - data not copied into the final runtime stage;
@@ -626,12 +629,12 @@ preserves verifier logs and copied outputs under `task/.runner-logs/`:
 ./harbor_runner.py task --no-remote --smoke-test
 ```
 
-The smoke mode does not build or run the separate Harbor verifier image and does
-not start an agent job. Use it to catch local packaging, path,
-solution, and reward-wiring errors before the remote run. Because the smoke
-test runs the verifier script inside the environment image, any dependency it
-needs must be available there. That is also exactly how the Nexus sandbox runs,
-so a passing smoke test is a good predictor of submission behaviour.
+The smoke mode uses the environment image for both the solution and verifier and
+does not start an agent job. Use it to catch local packaging, path, solution,
+and reward-wiring errors before the remote run. Because the verifier script runs
+inside the environment image, any dependency it needs must be available there.
+That is also exactly how the Nexus sandbox runs, so a passing smoke test is a
+good predictor of submission behaviour.
 
 Before the required campaign, you can optionally
 [run one quick local agent trial](docs/quick-local-agent-trial.md).

@@ -22,8 +22,8 @@ The task-fixer may edit only task metadata and environment/build-support files:
 - `environment/Dockerfile` and support files used by that Dockerfile;
 - an existing task-local `README.md` when factual reviewer notes need repair;
   the file is optional and must not be created solely for scaffold compliance;
-- `tests/Dockerfile` and `tests/data/` when the separate verifier image or the
-  project scaffold requires them; the verifier implementation remains read-only;
+- `tests/data/` and, only when explicitly requested for local two-image testing,
+  an existing `tests/Dockerfile`; the verifier implementation remains read-only;
 - task-local runtime input data that must be vendored for an offline build.
 
 Read `instruction.md`, the solution directory, and the verifier directory to
@@ -42,6 +42,17 @@ Submitted tasks are validated by Google's sandboxed execution service, not by
 the open-source Harbor runtime. Most `task.toml` parameters are ignored there.
 Treat every constraint below as an Oracle-readiness gate, not as a reason to
 weaken the task contract.
+
+**Task name namespace.** `[task].name` must use the `org/name` form, for
+example `independent/lpxh-screen-triage`. Harbor reads a bare name such as
+`lpxh-screen-triage` as a dataset path, finds no valid child tasks under it, and
+aborts the run before the Oracle trial starts with
+`ValueError: Either datasets or tasks must be provided.` Nothing downstream
+runs: the Oracle records `EXCEPTION` with no reward, every agent trial stays
+queued, and the private Oracle artifact holds only the Harbor traceback. The
+exception is non-retryable, so a fresh bundle must be uploaded rather than the
+run retried. Keep the task's existing name as the segment after the slash and
+add the missing namespace; do not rename the task to work around the error.
 
 **Network.** Set `[environment].network_mode = "public"`, which is what the
 submission sandbox reads. Public network is the client policy for both the
@@ -190,7 +201,6 @@ work only inside it. A normal task contains:
 - the solution entrypoint and implementation named by the task (commonly
   `solution/solve.sh` and `solution/solve.py`);
 - `tests/test.sh`, the verifier files it references, and any required test data;
-- `tests/Dockerfile` when verifier mode is separate.
 
 The exact solution language and optional data files may vary. Repair missing
 build-support files when their contents can be derived from the existing task:
@@ -200,13 +210,12 @@ build-support files when their contents can be derived from the existing task:
   derived from the task metadata, data provenance, dependencies, and observed
   workflow. Do not put reviewer notes in `instruction.md`, and do not fill the
   README with generic TODOs or invented scientific claims.
-- If `tests/test.sh` and the verifier modules exist, create a complete
-  `tests/Dockerfile` from their actual imports and referenced files. It must be a
-  real verifier image, not an empty placeholder: use `FROM
-  --platform=linux/amd64`, define canonical variables, copy the existing test
-  entrypoint/modules/data, and pre-install dependencies from an approved local
-  wheelhouse or base image. If the required wheelhouse is not present, use the
-  bundled vendoring helper before reporting that dependency as unavailable.
+- Do not create `tests/Dockerfile` for submission compliance. The submission
+  sandbox runs the verifier in the runtime image. If an existing
+  `tests/Dockerfile` is intentionally maintained for local two-image testing,
+  keep it consistent with the actual test imports, referenced files, canonical
+  variables, and approved local wheelhouse; it is optional and never the only
+  place a verifier dependency may be installed.
 - Create required `environment/data/` or `tests/data/` directories. Use a
   `.gitkeep` only for an intentionally empty directory; copy actual referenced
   fixtures when the verifier needs them. Never fabricate reference data.
@@ -225,6 +234,7 @@ the exact missing path and remedy instead of inventing it.
    Read `task.toml`, `instruction.md`, the solution entrypoint and imports, the
    verifier entrypoint and imports, and every Dockerfile. Inventory:
 
+   - the `[task].name` value and whether it carries an `org/` namespace;
    - the Harbor environment mode, runtime user, timeouts, resource settings, and
      declared artifacts;
    - input files and CLIs/packages needed by the solution and verifier;
@@ -243,14 +253,19 @@ the exact missing path and remedy instead of inventing it.
 
    Edit `task.toml` only as needed to make it valid and Oracle-compatible:
 
+   - give `[task].name` a namespace when it lacks one, for example
+     `name = "independent/lpxh-screen-triage"` instead of
+     `name = "lpxh-screen-triage"`. Exactly one slash, lowercase, no spaces, and
+     the original name preserved as the second segment. Without the namespace
+     Harbor never starts the Oracle trial;
    - set `[environment].network_mode = "public"`, the default for the Oracle
      and the agent trials. Preserve the task's scientific contract, including
      its HTTP calls to scientific databases and tools, and do not let the
      public network replace a vendored library;
    - do not rely on `environment_mode`: the submission sandbox ignores it and
      runs one container, so the verifier's dependencies belong in the runtime
-     image. `tests/Dockerfile` may still exist for local two-image runs, but it
-     is never built at submission time and must not be the only place a
+     image. An optional `tests/Dockerfile` may support local two-image runs, but
+     it is never built at submission time and must not be the only place a
      verifier dependency is installed;
    - declare the files the existing solution produces and the verifier consumes
      in Harbor's supported artifact form, normally
@@ -291,7 +306,7 @@ the exact missing path and remedy instead of inventing it.
    - make every `FROM` line explicit: `FROM --platform=linux/amd64 ...`;
    - install the verifier's dependencies in the runtime image too. The
      submission sandbox runs the agent and the verifier in one container, so a
-     package that exists only in the verifier image passes locally and then
+     package that exists only in the optional local verifier image passes locally and then
      fails on submission with `No module named pytest`;
    - never leave wheelhouses, caches, or vendored dependencies under `/tmp`.
      The sandbox replaces `/tmp` with an empty tmpfs at startup, so anything
@@ -356,8 +371,9 @@ the exact missing path and remedy instead of inventing it.
 
    - do not create `task/README.md` solely to satisfy scaffold compliance; it is
      optional reviewer context;
-   - create or repair `tests/Dockerfile` and `tests/data/` from existing
-     verifier files and referenced fixtures;
+   - create or repair `tests/data/` from existing verifier files and referenced
+     fixtures; repair an existing `tests/Dockerfile` only when an explicit local
+     two-image test requires it;
    - set executable bits on existing solution/verifier shell entrypoints;
    - add `FROM --platform=linux/amd64` to every Dockerfile stage and correct
      context-relative `COPY` paths;
@@ -371,15 +387,19 @@ the exact missing path and remedy instead of inventing it.
 
 6. **Check Oracle prerequisites without running the task.**
 
-   Validate the TOML, required file set, Dockerfile context paths, `COPY` targets,
+   Validate the TOML, the `org/name` form of `[task].name`, required file set,
+   Dockerfile context paths, `COPY` targets,
    environment-variable wiring, entrypoints, user permissions, artifact paths,
    and offline/network settings. When Docker and approved cached dependencies are
    available, build the affected images with:
 
    ```bash
    docker build --platform linux/amd64 -t <temporary-runtime-tag> environment
-   docker build --platform linux/amd64 -t <temporary-verifier-tag> tests
    ```
+
+   If an optional local two-image configuration is explicitly being tested and
+   `tests/Dockerfile` exists, build and inspect that image as a separate,
+   non-submission check.
 
    Before declaring the image checks impossible, inspect `docker context show`,
    `docker context ls`, `docker info`, and `DOCKER_HOST`. If another already
@@ -390,11 +410,13 @@ the exact missing path and remedy instead of inventing it.
    report the exact access error; mark the architecture and image-size checks
    `UNVERIFIED` rather than claiming the task or Dockerfile is at fault.
 
-   Build the verifier image only when separate mode is configured. Inspect each
-   resulting image with `docker image inspect --format '{{.Size}}'` and fail the
-   size gate if it exceeds `2000000000` bytes. A file-presence check inside a
-   temporary container is allowed; do not execute `solution/solve.py`, the
-   solution entrypoint, `tests/test.sh`, pytest, the Oracle, Harbor, or any agent
+   Do not build a separate verifier image for the default shared-container path.
+   If an optional local two-image configuration is explicitly being tested and
+   `tests/Dockerfile` exists, inspect that image with
+   `docker image inspect --format '{{.Size}}'` and fail the size gate if it
+   exceeds `2000000000` bytes. A file-presence check inside a temporary
+   container is allowed; do not execute `solution/solve.py`, the solution
+   entrypoint, `tests/test.sh`, pytest, the Oracle, Harbor, or any agent
    trajectory from this skill.
 
    Also run a dependency-only smoke check in each affected image with
@@ -407,11 +429,12 @@ the exact missing path and remedy instead of inventing it.
      'command -v python3 && python3 -c "import <runtime-packages>"'
    ```
 
-   For a separate verifier image, also check `command -v pytest` (or every
+   If an optional local verifier image is being tested, also check `command -v pytest` (or every
    other CLI named by `tests/test.sh`) and import its required modules. The
    check must succeed using the interpreter selected by bare commands under
    the scrubbed environment; do not treat a normal-`PATH` virtualenv check as
-   sufficient. If a prior Oracle attempt exists, read its `agent/oracle.txt`,
+   sufficient. If no separate image is used, perform these dependency checks
+   in the runtime image. If a prior Oracle attempt exists, read its `agent/oracle.txt`,
    verifier stdout, exit code, and trial log before interpreting artifact
    errors. A best-effort download failure such as `path does not exist` is
    usually downstream of the producer or verifier failing; repair that primary
@@ -450,7 +473,8 @@ the exact missing path and remedy instead of inventing it.
 ## Failure handling
 
 Return `FAIL` only after attempting the in-scope repairs. Fail when a required
-implementation or scientific input is missing, metadata remains invalid, a
+implementation or scientific input is missing, metadata remains invalid — for
+example a `[task].name` that still has no `org/` namespace — a
 Docker build context or path remains broken, a required library cannot be
 vendored, a run-time install remains, an image is not `linux/amd64`,
 an image exceeds 2 GB, or a mismatch can only be fixed by editing instruction,
@@ -497,7 +521,7 @@ files changed, checks run, and remaining blockers. When run through
   `"public"` by policy, so it is never the fix for a failing build or a missing
   library: vendor the library instead.
 - Never stage build artifacts under `/tmp`, and never leave a verifier
-  dependency installed only in `tests/Dockerfile`.
+  dependency installed only in the optional local `tests/Dockerfile`.
 - Never write the author's scientific metadata: the task description, the three
   explanation fields, and the expert time estimate stay in the author's voice.
 - Clean up every temporary container and image created during validation.

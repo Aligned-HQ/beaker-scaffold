@@ -28,7 +28,6 @@ REQUIRED_FILES = (
     "environment/Dockerfile",
     "solution/solve.sh",
     "solution/process.md",
-    "tests/Dockerfile",
     "tests/test.sh",
     "tests/test_outputs.py",
 )

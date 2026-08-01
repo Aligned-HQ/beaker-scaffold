@@ -12,7 +12,7 @@ Everything below is installed on the authoring machine only.
 
 | Dependency | Needed for | Install |
 | --- | --- | --- |
-| Docker Desktop or Docker Engine | building the runtime and verifier images, the local smoke test | <https://docs.docker.com/get-started/get-docker/> |
+| Docker Desktop or Docker Engine | building the runtime image and running the local smoke test | <https://docs.docker.com/get-started/get-docker/> |
 | Harbor CLI (`harbor`) | validating the task and running the Oracle locally | `uv tool install harbor` |
 | Python 3.11+ | scaffold scripts and `tomllib` | `brew install python@3.12`, or your distro package |
 | `rich` Python package | runner panels, tables, and transfer progress | `python3 -m pip install -r requirements.txt` |
@@ -26,8 +26,10 @@ covers. The sections below give the detail for each.
 
 ## Docker
 
-Docker builds the runtime image, the isolated verifier image, and the local
-smoke-test container. It is required.
+Docker builds the runtime image and the local smoke-test container. It is
+required for the local smoke test. The submission sandbox uses the runtime
+image for verification; a second verifier image is only optional local
+tooling.
 
 - macOS and Windows: install Docker Desktop from
   <https://docs.docker.com/get-started/get-docker/>.

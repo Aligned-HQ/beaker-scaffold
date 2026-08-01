@@ -49,6 +49,11 @@ as resource configuration, environment hygiene, or reproducibility. If Docker
 evidence is unavailable, explain that limitation in the relevant row; do not
 create a separate deployment verdict.
 
+The submission sandbox runs the agent and verifier in the same runtime image.
+Treat `tests/Dockerfile` as an optional local two-image fixture, not a task
+prerequisite, and do not fail a task or require a second image solely because
+that optional file is absent.
+
 ## Inputs
 
 - **Rubric**: `task_implementation.toml` at the repo root. Read every

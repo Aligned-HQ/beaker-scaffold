@@ -44,7 +44,7 @@ This is the file-level reference for the
 │   │   ├── solve.py                  # derivation, not a stored answer
 │   │   └── process.md                # intended expert workflow
 │   └── tests/
-│       ├── Dockerfile                # isolated verifier image
+│       ├── Dockerfile                # optional local two-image test; not submission-required
 │       ├── test.sh                   # verifier entrypoint/reward writer
 │       ├── test_outputs.py           # executable scientific assertions
 │       └── data/                     # verifier-only fixtures or truth

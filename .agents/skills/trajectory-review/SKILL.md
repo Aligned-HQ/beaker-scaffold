@@ -121,10 +121,10 @@ into a task bug on its own.
    - **Structural task bug**: missing runtime data, Docker build/copy failure,
      missing dependencies, wrong user/permissions, missing output artifacts,
      reward-file problems, no trial result, task not loaded into `lock.json`,
-     verifier image missing files, or agent could not run the provided tools.
-     Also structural, and each fatal at submission: a verifier dependency
-     installed only in the verifier image, since the submission sandbox runs one
-     container; a dependency or cache staged under `/tmp` at build time, which
+     missing runtime or verifier-overlay files, or agent could not run the
+     provided tools. Also structural, and each fatal at submission: a verifier
+     dependency installed only in an optional local verifier image, since the
+     submission sandbox runs one container; a dependency or cache staged under `/tmp` at build time, which
      the sandbox wipes with a fresh tmpfs; a run-time package install, which the
      task must not need because `network_mode = "public"` is for reaching
      scientific databases and tools over HTTP, not for fetching the toolchain;

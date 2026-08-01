@@ -14,10 +14,11 @@ real research workflow before an agent campaign.
 - `tests/test_outputs.py` independently recomputes the summary from the
   verifier copy at `tests/data/input.csv`, checks the exact key set, and checks
   finite numeric values.
-- The runtime solution uses only the Python standard library. The separate
-  verifier image installs the pinned `pytest==8.4.1` and
-  `pytest-json-ctrf==0.3.5` dependency set from the Linux/amd64 wheelhouse in
-  `tests/wheels/` without contacting an index.
+- The runtime solution uses only the Python standard library. The runtime image
+  also includes the pinned `pytest==8.4.1` and `pytest-json-ctrf==0.3.5`
+  dependency set from the Linux/amd64 wheelhouse in `tests/wheels/` without
+  contacting an index. The optional `tests/Dockerfile` is only a local
+  two-image fixture and is not used by submission.
 
 The two CSV files are deliberately identical public fixtures for this smoke
 task. A finished task should document the provenance and transformation of its
@@ -26,11 +27,12 @@ public inputs here, and keep any verifier-only reference material under
 
 ## Container contract
 
-Both Dockerfiles build explicitly for Linux/amd64. The runtime Dockerfile
-copies only `environment/data/`, creates the non-root `agent` user, and has no
-networked package or agent-bootstrap step. The verifier Dockerfile copies its
-existing test files and data, installs its vendored wheels with
-`--no-index --find-links`, and creates the verifier log and output directories.
+The runtime Dockerfile builds explicitly for Linux/amd64, copies only
+`environment/data/`, creates the non-root `agent` user, and has no networked
+package or agent-bootstrap step. The optional verifier Dockerfile is retained
+only for local two-image tests; it copies its existing test files and data,
+installs its vendored wheels with `--no-index --find-links`, and creates the
+verifier log and output directories.
 The task metadata sets `network_mode = "public"`, the client default for the
 Oracle and the agent trials, so both can query scientific databases and tools
 over HTTP. The image still vendors every Python dependency: the network is for
@@ -43,12 +45,12 @@ verifier Dockerfile is only used for local two-image runs.
 
 ## Maintainer notes for a real task
 
-When adapting this bundle, preserve the paths and container separation while
-documenting the actual workflow, data provenance, dependency rationale,
-scientific method choices, and tolerance calibration. Keep the agent contract
-in `instruction.md`, the reference workflow in `solution/`, and independent
-machine-checkable assertions in `tests/`. Do not copy the solution or hidden
-verifier material into the runtime image.
+When adapting this bundle, preserve the canonical paths while documenting the
+actual workflow, data provenance, dependency rationale, scientific method
+choices, and tolerance calibration. Keep the agent contract in `instruction.md`,
+the reference workflow in `solution/`, and independent machine-checkable
+assertions in `tests/`. Do not copy the solution or hidden verifier material
+into the runtime image.
 
 ## Local commands
 

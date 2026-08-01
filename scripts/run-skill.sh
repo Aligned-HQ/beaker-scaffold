@@ -568,7 +568,9 @@ ${TARGET_ABS}
 
 The client policy is mandatory: task environments set
 network_mode = "public" for the Oracle and the agent trials, and each final
-runtime or separate verifier image must be at most 2 GB (2,000,000,000 bytes).
+runtime image must be at most 2 GB (2,000,000,000 bytes). The submission uses
+that runtime image for verification; an optional local two-image fixture is
+subject to the same limit if used.
 Preserve those constraints. Public network exists so the Oracle and the agent
 can reach scientific databases and tools over HTTP; it is not a licence to
 install dependencies at run time. Keep Python libraries and code vendored in

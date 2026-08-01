@@ -82,8 +82,8 @@ Tests must resist adversarial shortcuts agents commonly attempt: creating fake t
 
 The answer must not be embedded in environment files, Docker image layers, or accessible through trivial file inspection. Tests should not depend on mutable external resources that allow shortcuts.
 
-The supported submission sandbox may run the agent and verifier in the same
-runtime image and may not support a separate verifier image or a separate
+The supported submission sandbox runs the agent and verifier in the same
+runtime image and does not require a separate verifier image or a separate
 artifact-transfer boundary. Shared-container verification is therefore
 acceptable and is not, by itself, an anti-cheat failure. Do not require
 `verifier.environment_mode = "separate"`, a second Docker image, or artifact
@@ -435,7 +435,7 @@ Valid sections and their fields (defined by the Harbor library):
 
 [verifier]:
 - timeout_sec, env, user, environment_mode
-- environment (subsection with the same fields as top-level [environment]; used in separate verifier mode to override resource limits)
+- environment (subsection with the same fields as top-level [environment]; an optional override only when a runner explicitly supports separate verifier mode)
 
 [agent]:
 - timeout_sec, user
@@ -450,7 +450,7 @@ Valid sections and their fields (defined by the Harbor library):
 
 Root level:
 - schema_version, task, metadata, verifier, agent, environment, solution, source
-- artifacts (list of absolute paths uploaded from the agent container into the verifier container in separate verifier mode)
+- artifacts (list of absolute paths uploaded from the agent container when a runner explicitly provides separate verifier mode)
 
 Do not add invented fields (e.g., "skills", "prerequisites", "estimated_difficulty", "notes") to any section.
 
