@@ -23,7 +23,6 @@ from typing import Any
 
 
 REQUIRED_FILES = (
-    "README.md",
     "instruction.md",
     "task.toml",
     "environment/Dockerfile",

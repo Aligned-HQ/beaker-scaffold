@@ -20,7 +20,8 @@ The task-fixer may edit only task metadata and environment/build-support files:
 
 - `task.toml` and task-local Docker/build metadata;
 - `environment/Dockerfile` and support files used by that Dockerfile;
-- `README.md` when the project scaffold requires reviewer notes;
+- an existing task-local `README.md` when factual reviewer notes need repair;
+  the file is optional and must not be created solely for scaffold compliance;
 - `tests/Dockerfile` and `tests/data/` when the separate verifier image or the
   project scaffold requires them; the verifier implementation remains read-only;
 - task-local runtime input data that must be vendored for an offline build.
@@ -194,10 +195,11 @@ work only inside it. A normal task contains:
 The exact solution language and optional data files may vary. Repair missing
 build-support files when their contents can be derived from the existing task:
 
-- Create a factual author/reviewer `README.md` from the task metadata, data
-  provenance, dependencies, and observed workflow. Do not put reviewer notes in
-  `instruction.md`, and do not fill the README with generic TODOs or invented
-  scientific claims.
+- Do not create `task/README.md` solely to satisfy a layout check. If an
+  existing task-local README is present, keep any reviewer notes factual and
+  derived from the task metadata, data provenance, dependencies, and observed
+  workflow. Do not put reviewer notes in `instruction.md`, and do not fill the
+  README with generic TODOs or invented scientific claims.
 - If `tests/test.sh` and the verifier modules exist, create a complete
   `tests/Dockerfile` from their actual imports and referenced files. It must be a
   real verifier image, not an empty placeholder: use `FROM
@@ -352,7 +354,8 @@ the exact missing path and remedy instead of inventing it.
    example `python3 scripts/validate_scaffold.py --root <project-root>
    --strict`. Fix every in-scope error before treating the task as blocked:
 
-   - create a factual `task/README.md` when the scaffold requires it;
+   - do not create `task/README.md` solely to satisfy scaffold compliance; it is
+     optional reviewer context;
    - create or repair `tests/Dockerfile` and `tests/data/` from existing
      verifier files and referenced fixtures;
    - set executable bits on existing solution/verifier shell entrypoints;
@@ -475,9 +478,10 @@ files changed, checks run, and remaining blockers. When run through
   implementation. This includes `solve.py`, `solve.sh`, `tests/test.sh`, test
   Python files, thresholds, fixtures, and expected outputs.
 - File mode changes on existing required shell entrypoints are allowed; never
-  change their contents. Adding reviewer `README.md`, Dockerfiles, data
-  directories, `.gitkeep`, and approved vendored dependency files is allowed
-  only when the contents are derived from the task and genuinely required.
+  change their contents. Editing an existing reviewer `README.md`, Dockerfiles,
+  data directories, `.gitkeep`, and approved vendored dependency files is allowed
+  only when the contents are derived from the task and genuinely required. Do
+  not add a README solely to satisfy scaffold compliance.
 - Never alter the scientific problem, output schema, tolerances, or verifier
   assertions to manufacture Oracle success.
 - Never create placeholder solution/test implementations or fake scientific

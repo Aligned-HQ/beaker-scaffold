@@ -33,7 +33,7 @@ This is the file-level reference for the
 │   └── trajectory-review.md
 ├── skill-status.md                   # overwritten latest status for each skill
 ├── task/
-│   ├── README.md                     # maintainer notes for this task
+│   ├── README.md                     # optional maintainer notes for this task
 │   ├── instruction.md                # agent-facing scientific contract
 │   ├── task.toml                     # Harbor metadata and resources
 │   ├── environment/
