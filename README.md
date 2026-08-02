@@ -25,16 +25,12 @@ make a decision such as proceed, stop, rank candidates, redesign, or choose the
 next experiment. The stages need to depend on one another; a longer list of
 unrelated commands is still a collection of exercises.
 
-The collection also has to test generalization. Famous targets, datasets, and
-case studies can reward recall of well-known conclusions instead of work on
-the task inputs. Use less-canonical proteins as controls, or pair a familiar
-target with a lesser-studied one that has comparable evidence. Across the
-protein-centered task set, cover more than soluble globular monomers. Oligomers,
-flexible and intrinsically disordered proteins, membrane proteins, and
-aggregation-prone systems require different representations and quality checks.
+The task also has to test generalization. Be wary of famous targets, datasets, and
+case studies that can reward recall of well-known conclusions instead of work on
+the task inputs. 
 
 For a stage-by-stage catalog of representative work, see
-[Drug discovery pipeline — workflow patterns, task components & tools](drug_discovery_pipeline.md).
+[Drug discovery pipeline - workflow patterns, task components & tools](drug_discovery_pipeline.md).
 
 There are many files and scripts in this repository meant to help you create your task but you only need to worry about five files:
 
@@ -43,7 +39,7 @@ There are many files and scripts in this repository meant to help you create you
    constraints, and exact outputs that an agent must produce.
 3. `test_outputs.py` checks independent, substantive properties of
    the submitted outputs from your reference solution and any solution offered by an agent when the agent harness is run.
-4. `process.md` — shows how an expert would solve the task step by step.
+4. `process.md` - shows how an expert would solve the task step by step.
 5. `task.toml` - this is metadata about the task that you'll need to edit.
 
 Before asking models to solve the task, we run the reference workflow (aka Oracle) against the tests to confirm that the task and its evaluation are working as intended. We then give the same instruction and public task environment to three
@@ -53,15 +49,15 @@ outputs are evaluated by the tests and their work is reviewed afterward.
 
 ![How the four authored files flow through a run: solve.py drives the Oracle run and instruction.md drives the agent runs; both produce output files at the paths you promised; the same verifier from tests/ grades both by recomputing from the private answer key; the Oracle must pass and all agents must fail at least 50% of the time](assets/terminal_bench_contributor_four_files_flow.png)
 
-The load-bearing relationships behind the picture:
+The relationships behind the image above:
 
-- `solve.py` proves the task is solvable. It runs first, unattended, reading `DATA_DIR` and writing `OUTPUT_DIR`. If it fails the verifier, no agent is ever asked to try — so it is the fastest way to discover that your tests are wrong.
+- `solve.py` proves the task is solvable. It runs first, unattended, reading `DATA_DIR` and writing `OUTPUT_DIR`. If it fails the verifier, no agent is ever asked to try - so it is the fastest way to discover that your tests are wrong.
 
 - `instruction.md` is the agent's entire world. The agents never see `solve.py`, never see `task/tests/data/`. Every filename, key, column, unit, and threshold the verifier touches has to appear here or be obvious from the public data, or a failure is your bug rather than a scientific result. This is the one file you hand-write in your own voice.
 
 - `tests/` is the whole grading mechanism. Binary: all pass → 1, any fail → 0. Recompute from your own copy of the data in `task/tests/data/` rather than asserting pasted constants, and set tolerances wide enough that a second reasonable method passes but a wrong answer doesn't.
 
-- `process.md` is the only one with no runtime role. It's what a reviewer reads to judge whether the workflow was real — how inputs and states were triaged, which methods competed, why you chose one, how you validated it, and how the evidence supports the final decision — with hidden values kept out.
+- `process.md` is the only one with no runtime role. It's what a reviewer reads to judge whether the workflow was real - how inputs and states were triaged, which methods competed, why you chose one, how you validated it, and how the evidence supports the final decision - with hidden values kept out.
 
 The same verifier has to be tight enough that your Oracle passing means something, and loose enough that three different agents failing means they got the science wrong rather than the filename.
 
@@ -95,34 +91,25 @@ require files, fields, keys, methods, thresholds, units, or other properties
 that the instruction does not ask the agent to produce. If a property matters
 to the evaluation, state it clearly in `instruction.md`; otherwise an agent
 failure may reflect an underspecified task rather than a genuine scientific
-failure.
-
-Follow these steps in order. Start with step 0 to screen a candidate workflow
-against a live agent, then step 1 to refine the proposal in Workbench; the
-sections under step 4 explain how to build a scientifically credible task,
-which the fixer and reviews then harden.
+failure. Focus instructions on a simple premise that requires multiple tools and interpretation of data. The instructions should ask the agent to produce the final output, not the intermediate steps. 
 
 ## 0. Pick a workflow and screen it with an agent
 
 Do this before writing a single file. The gate in step 10 requires every agent
 to fail at least two of its four trials, so a workflow an agent can already
-handle cannot become a submittable task no matter how well you author it. Find
-that out in an afternoon rather than after building a solution and a verifier.
+handle cannot become a submittable task no matter how well you author it. Its better to find
+that out quickly rather than after building a solution and a verifier.
 
 1. **Pick a candidate workflow.** Start with a practitioner and a decision,
    then choose relevant components from
-   [Drug discovery pipeline — workflow patterns, task components & tools](drug_discovery_pipeline.md),
+   [Drug discovery pipeline - workflow patterns, task components & tools](drug_discovery_pipeline.md),
    in the stage of the pipeline you want to author for. Include any prior or
-   parallel checks whose failure would invalidate the central analysis. For
-   protein-centered work, choose the protein class deliberately and avoid
-   defaulting to a canonical target whose answer may be familiar from training
-   data.
+   parallel checks whose failure would invalidate the central analysis. 
 2. **Write the prompt.** Draft the scientific question, the inputs the agent
-   gets, the decision the result will support, and the outputs it must produce
-   — a first pass at `instruction.md`. Do not include the method, the reference
+   gets, the decision the result will support, and the outputs it must produce - a first pass at `instruction.md`. Do not include the method, the reference
    approach, or the answer.
-3. **Run it with an agent.** Give that prompt to at least one frontier agent —
-   Claude Code, Codex, or Gemini (Antigravity) — with the same data access a
+3. **Run it with an agent.** Give that prompt to at least one frontier agent -
+   Claude Code, Codex, or Gemini (Antigravity) - with the same data access a
    solver would have. This screen needs only an installed agent CLI or its chat
    interface; step 3.1 covers installing one if you don't have it yet.
 4. **Judge the result the way your verifier would.** Is the science right, are
@@ -139,9 +126,6 @@ that out in an afternoon rather than after building a solution and a verifier.
    output path, or a prompt the agent could not parse is a drafting bug, not
    difficulty. Fix the prompt and rerun before concluding anything.
 
-Keep the prompt and the agent transcript. They feed the proposal in step 1, the
-`difficulty_explanation` in `task.toml`, and your own judgment about whether a
-later agent failure is genuine.
 
 ## 1. Proposal
 
@@ -151,9 +135,7 @@ Before building the submission, iterate on the task proposal in
 1. Open the **Beaker Campaign** queue and claim a task for the area of the drug
    discovery pipeline your screened workflow belongs to.
 2. Open the claimed task, paste the task you want to author into the **Task
-   proposal** text box, and request a proposal review. Say what the agent
-   produced in step 0, which practitioner decision the task represents, and why
-   the agent's analysis or recommendation fell short.
+   proposal** text box, and request a proposal review.
 3. Read the expert feedback, revise the proposal, and request another review.
    Iterate until you believe the task is well-scoped, scientifically
    meaningful, and likely to pass before you build the submission.
@@ -167,16 +149,13 @@ git clone https://github.com/Aligned-HQ/beaker-scaffold.git aligned_beaker_task
 cd aligned_beaker_task
 ```
 
-Keep the task in its own checkout. The skill wrappers, Markdown reports, status
-file, Harbor evidence, and trajectory archive are all part of the handoff.
-
 ## 3. Set up the local authoring toolchain
 
 ### 3.1 Install the three things the setup script cannot
 
 Install the following:
 
-1. **An agent CLI** — Claude Code or Codex. The task-fixer, task-review, and
+1. **An agent CLI** - Claude Code or Codex. The task-fixer, task-review, and
    trajectory-review steps drive one of them. Either is fine; installing both
    lets you switch with `--runner`.
 
@@ -186,15 +165,15 @@ Install the following:
    ```
 
    Run it once interactively to sign in. If you already have one installed, make
-   sure it is current — `claude update` / `codex update` — since the skill
+   sure it is current - `claude update` / `codex update` - since the skill
    wrappers need a recent CLI and will tell you the exact version to upgrade to
    if yours is too old.
 
-2. **Docker** — Docker Desktop on macOS or Windows, Docker Engine on Linux:
+2. **Docker** - Docker Desktop on macOS or Windows, Docker Engine on Linux:
    <https://docs.docker.com/get-started/get-docker/>. Start it and leave it
    running; the smoke test and the local Oracle run need it.
 
-3. **A Workbench runner token** — This is token that will authenticate the scripts that automatically run the agents. Log in to <https://workbench.alignedhq.ai>,
+3. **A Workbench runner token** - This is token that will authenticate the scripts that automatically run the agents. Log in to <https://workbench.alignedhq.ai>,
    open your profile → Settings, and create an access token. Keep it to hand for
    the next step. Tokens are per-person: never share or commit one.
 
@@ -300,8 +279,8 @@ into a scientific story. Do not compensate for an easy task by making the
 prompt long, the output schema enormous, or the requested deliverable difficult
 to format.
 
-If the workflow has drifted from what you screened in step 0 — a different
-question, easier data, a narrower output — screen the revised prompt against an
+If the workflow has drifted from what you screened in step 0 - a different
+question, easier data, a narrower output - screen the revised prompt against an
 agent again before writing the bundle.
 
 ### 4.2 Fill the task bundle
@@ -358,9 +337,7 @@ Provide enough context for the agent to discover whether the analysis is fit
 for use, but leave meaningful method and input selection to the agent. Avoid an
 ordered recipe, exact reference equations when deriving them is the substance
 of the task, prescribed library calls, hidden thresholds, feature-engineering
-recipes, or instructions to reproduce the reference solution. Every filename,
-key, column, unit, environment variable, and output checked by the verifier
-must be stated in the prompt or be obvious from visible data.
+recipes, or instructions to reproduce the reference solution. 
 
 Name the shape, not the method. The agent cannot guess a key you never wrote
 down, so list them; but a key like `docking_score_vina_exhaustiveness_16` hands
@@ -388,10 +365,10 @@ or a scientific tool, but it must not install anything.
 
 **What you write.** Three files in `task/solution/`:
 
-- `solve.py` (or another real implementation) — the actual analysis;
-- `solve.sh` — one line that runs it. The scaffold's version already works, and
+- `solve.py` (or another real implementation) - the actual analysis;
+- `solve.sh` - one line that runs it. The scaffold's version already works, and
   you normally do not need to change it;
-- `process.md` — a plain-English description of the workflow, for a reviewer.
+- `process.md` - a plain-English description of the workflow, for a reviewer.
 
 **Where the files live.** Input and output locations are handed to your script
 as environment variables, so read them rather than hardcoding paths. Keep a
@@ -412,12 +389,12 @@ your results go, using the exact filenames you promised in `instruction.md`.
 **Rules that matter:**
 
 - compute the answer from the inputs. Never paste in expected values, and never
-  read anything from `task/tests/` — that is the answer key;
+  read anything from `task/tests/` - that is the answer key;
 - produce the same result every time. Seed anything random, and if some
   variation is unavoidable, say so and make your tests tolerant of it;
 - finish comfortably inside the time budget; a task gets 60 minutes total;
 - if you need a library, just import it and use it. Getting it installed and
-  working offline is what the task-fixer does in step 5 — do not spend time on
+  working offline is what the task-fixer does in step 5 - do not spend time on
   packaging here;
 - you may query a scientific database or tool over HTTP, but never install a
   package at run time. If a remote answer can drift between runs, note it in
@@ -437,7 +414,7 @@ solution) finishes, the files it produced are handed to your tests. They are
 ordinary pytest functions, run once. Every test passes, the attempt scores 1;
 any test fails, it scores 0. That is the whole grading mechanism.
 
-**What you write.** `task/tests/test_outputs.py` — pytest functions that open
+**What you write.** `task/tests/test_outputs.py` - pytest functions that open
 the produced files and check them. The scaffold's `task/tests/test.sh` already
 runs pytest and records the score, so leave it alone unless you have a reason.
 Put any answer key or private fixture in `task/tests/data/`; the agent never
@@ -467,7 +444,7 @@ canonical target, make the expected result depend on task-specific or held-out
 data rather than a famous literature fact.
 
 **What not to check.** Do not read the agent's source code, and do not grade
-writing — no keyword, heading, word-count, or tone tests. A report that says the
+writing - no keyword, heading, word-count, or tone tests. A report that says the
 right thing for the wrong reason should still fail, and one that reaches the
 right answer by an unexpected method should still pass.
 
@@ -479,7 +456,7 @@ through execution and output values.
 
 **Two rules decide whether a failure is fair:**
 
-- everything you check must already be stated in `instruction.md` — every
+- everything you check must already be stated in `instruction.md` - every
   filename, key, column, unit, and threshold. If a test requires something the
   instruction never asked for, the agent failed your task description, not the
   science;
@@ -670,7 +647,7 @@ After the Harbor campaign completes, review the archived trajectory:
 The trajectory review runs your agent (Cluade Code or Codex) inside a wrapper
 and uses it to decide one thing: did the agents fail because their science and
 reasoning were wrong? That is a pass. It separates out the failures that are not
-genuine — structural task bugs, trials that could not reach an external database
+genuine - structural task bugs, trials that could not reach an external database
 or API, brittle tolerances, an output structure the instruction never disclosed,
 and any case where the trajectory shows the agent did the science correctly or
 took a defensible alternative and the verifier rejected it anyway. It does not
