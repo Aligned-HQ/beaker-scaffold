@@ -149,11 +149,13 @@ def print_runner_panel(
     console.print(Panel(body, title=title, border_style=border_style))
 
 
-# The standard campaign has one task and four attempts per agent. Workbench's
-# remote per-agent concurrency is a fan-out multiplier, so keep it at one to
-# avoid turning those four attempts into twelve trials per agent.
+# Local Harbor defaults: four attempts per agent with one worker. Workbench's
+# remote concurrency is a fan-out multiplier, so use a separate remote
+# schedule below to fit the same coverage inside its 60-minute ceiling.
 DEFAULT_CONCURRENCY = 1
 DEFAULT_REPEATS = 4
+REMOTE_DEFAULT_CONCURRENCY = 4
+REMOTE_DEFAULT_REPEATS = 1
 MODAL_PLATFORM = "linux/amd64"
 # Client policy: the Oracle and the agent trials both run with public network.
 DEFAULT_NETWORK_MODE = "public"
@@ -2281,7 +2283,10 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             )
             print(
                 f"remote submit: bundle ready ({bundle_size} bytes, {bundle_sha256}); "
-                f"requesting {len(agents)} agent job(s) x {args.repeats} attempt(s)",
+                f"requesting {len(agents)} agent job(s) x {args.repeats} attempt(s) "
+                f"x {sum(int(agent['concurrency']) for agent in agents)} fan-out "
+                f"lane(s) = {args.repeats * sum(int(agent['concurrency']) for agent in agents)} "
+                "configured trial(s)",
                 flush=True,
             )
             idempotency_key = state.get("idempotency_key") if isinstance(state.get("idempotency_key"), str) else f"harbor-runner:{uuid4().hex}"
@@ -5820,10 +5825,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--repeats",
         type=int,
-        default=DEFAULT_REPEATS,
+        default=None,
         help=(
             "Attempts for this task, passed to harbor --n-attempts "
-            f"(default: {DEFAULT_REPEATS})."
+            f"(default: {REMOTE_DEFAULT_REPEATS} for remote, {DEFAULT_REPEATS} for local)."
         ),
     )
     parser.add_argument(
@@ -5953,8 +5958,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--default-concurrency",
         type=int,
-        default=DEFAULT_CONCURRENCY,
-        help=f"Concurrency for --run agents that don't specify one (default: {DEFAULT_CONCURRENCY}).",
+        default=None,
+        help=(
+            "Concurrency for --run agents that do not specify one "
+            f"(default: {REMOTE_DEFAULT_CONCURRENCY} for remote, "
+            f"{DEFAULT_CONCURRENCY} for local)."
+        ),
     )
     parser.add_argument(
         "--local-concurrency",
@@ -6204,6 +6213,12 @@ def main(argv: list[str]) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.repeats is None:
+        args.repeats = REMOTE_DEFAULT_REPEATS if args.remote else DEFAULT_REPEATS
+    if args.default_concurrency is None:
+        args.default_concurrency = (
+            REMOTE_DEFAULT_CONCURRENCY if args.remote else DEFAULT_CONCURRENCY
+        )
     global MODAL_APP_NAME, MODAL_CLEANUP_ARMED, SHUTDOWN_MODAL_COMPLETED, SHUTDOWN_MODAL_ON_INTERRUPT
     MODAL_APP_NAME = None
     MODAL_CLEANUP_ARMED = False

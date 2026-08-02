@@ -987,13 +987,15 @@ def check_default_remote_trial_count() -> None:
     args = SimpleNamespace(
         run=[],
         n_concurrent=None,
-        default_concurrency=harbor_runner.DEFAULT_CONCURRENCY,
-        repeats=harbor_runner.DEFAULT_REPEATS,
+        default_concurrency=harbor_runner.REMOTE_DEFAULT_CONCURRENCY,
+        repeats=harbor_runner.REMOTE_DEFAULT_REPEATS,
     )
     payload = harbor_runner.remote_agent_payload(args)
     assert len(payload) == 3
-    assert all(item["concurrency"] == 1 for item in payload)
-    # Four trials for each of the three agents.
+    assert all(item["concurrency"] == 4 for item in payload)
+    # One attempt in four fan-out lanes produces four concurrent trials per agent.
+    assert all(args.repeats * int(item["concurrency"]) == 4 for item in payload)
+    # Keep the complete default campaign at twelve trials.
     assert args.repeats * sum(int(item["concurrency"]) for item in payload) == 12
 
 
