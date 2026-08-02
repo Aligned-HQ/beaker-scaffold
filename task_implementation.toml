@@ -14,15 +14,15 @@ Reject tasks where there is no way to verify the task has been solved or where g
 name = "well_specified"
 description = "Instruction completely describes what tests check, concisely and without ambiguity"
 guidance = """
-The problem description must completely describe what the verification algorithm will look for. Nothing should be left up to guessing. As a rough guide, if two reasonable people read the problem description, both should write verification algorithms so that anyone who passed one verifier would also pass the other.
+The problem description must state the scientific goal, relevant inputs, material decision categories, constraints, and output contract. It does not need to reproduce every numerical verifier constant. Exact domain-specific acceptance thresholds and category boundaries may remain operational grading details when the instruction identifies the corresponding outcome-level decision and the verifier applies them consistently. A compact reference to the task's stated acceptance criteria or evaluation rules is sufficient; do not require every criterion label or numeric cutoff to be enumerated. Do not treat a private fixture or an independently recomputed threshold as hidden merely because its numeric value is not repeated in the prompt.
 
-The required inputs, key steps, and expected outputs should be defined precisely enough that both a domain expert and an AI agent could understand what needs to be done. The task specification should not be misleading or ambiguous.
+The required inputs, expected outputs, and material outcome semantics should be defined precisely enough that both a domain expert and an AI agent could understand what needs to be done. The task specification should not be misleading or ambiguous, but ordinary scientific discretion and verifier calibration need not be eliminated from the problem.
 
 The best tasks can be described succinctly in 2-3 paragraphs. A well-specified task shouldn't require a lot of guidance or hints on how to solve it. The agent should be able to explore the environment and learn about its architecture.
 
 For optimization-style tasks framed as "do as well as you can" within a stated time budget, the instruction must unambiguously specify the objective metric being optimized, the inputs, and the output format — but it need not state the verifier's accuracy threshold. The threshold is a grading detail of the verifier, not part of the task specification. The well-specified bar in this case is that two reasonable reviewers would rank candidate solutions in the same order, not that they would pick the same pass/fail cutoff.
 
-Reject tasks that are primarily hard because of how many corner cases must be handled. PASS if the instruction clearly and concisely specifies all behavior that tests verify (or, for optimization tasks, the objective metric and output format). FAIL if tests check behavior not described or only implied in the instruction, or if the instruction is so verbose that it introduces ambiguity."""
+Reject tasks that are primarily hard because of how many corner cases must be handled. PASS if the instruction clearly and concisely specifies the goal, outcome-level decisions, principal constraints, and output format, and the tests verify those outcomes. FAIL only if tests require a different result, an undisclosed deliverable, or a method that a reasonable researcher could not infer. Do not fail solely because the instruction omits an exact cutoff that is used to operationalize a named domain outcome."""
 
 [[criteria]]
 name = "solvable"
@@ -177,6 +177,8 @@ There should be a clear, auditable mapping between what the instruction asks for
 
 Tests should be hand-written, readable, and concise. If the agent must produce specific files, those filenames must be explicitly stated in the instruction.
 
+For tasks with quantitative or categorical outcomes, map assertions to the requested outcome rather than requiring the instruction to repeat every numerical cutoff. Private data, independent recomputation, and exact operational thresholds are acceptable when they implement a stated decision or invariant. A field described with a superlative or target value may be verified by requiring a finite, valid value that satisfies the relevant domain constraint; do not require a separate proof of global maximality or optimality unless optimization itself is the stated objective or changes the decision.
+
 For optimization tasks where the instruction asks the agent to do as well as possible on a stated metric within a time budget, the verifier's accuracy threshold is the operationalization of the instruction's accuracy requirement — not an undocumented test assertion. PASS in this case even if the specific threshold value is not stated in the instruction.
 
 The standard timeout + anti-cheat trailer ("You have X seconds... Do not cheat...") appended to every instruction is enforced by the harness, not by tests — ignore it when evaluating this criterion.
@@ -191,11 +193,13 @@ incompatible inequalities or units, mutually exclusive keys, or a test that
 requires a field another test forbids. A private fixture or an independently
 recomputed value is not a contradiction by itself.
 
-PASS if every test assertion traces back to a requirement in the instruction,
-the assertions are mutually consistent, and every instruction requirement is
-tested. FAIL if tests introduce requirements that contradict or go beyond what
-the instruction describes, if two assertions cannot be satisfied together, or
-if the instruction describes requirements that are not tested."""
+PASS if every test assertion traces back to an outcome-level requirement in the
+instruction, the assertions are mutually consistent, and every requested
+deliverable is tested. FAIL if tests introduce a contradictory scientific
+outcome, an undisclosed deliverable, or a non-inferable method, if two
+assertions cannot be satisfied together, or if a material requested outcome is
+not tested. Exact verifier cutoffs and a stronger-than-necessary maximality
+check are not alignment failures by themselves."""
 
 [[criteria]]
 name = "novel"
@@ -253,13 +257,24 @@ description = "Instruction uses minimal Markdown, avoids spoon-feeding, and sepa
 guidance = """
 Review instruction.md specifically for authoring discipline, in addition to its factual clarity. The instruction should contain the concise task statement, available inputs, required outputs, constraints, and essential scientific definitions needed to make the problem well-posed.
 
+Essential definitions are outcome-level definitions, not necessarily a copy of
+the verifier's constants. Do not require a compact contract to enumerate every
+domain-specific acceptance threshold or category boundary when it clearly
+identifies the decisions those measurements support and the verifier applies
+the rules as stable operational criteria.
+
 Use only Markdown that materially improves readability: short paragraphs, compact input/output lists, code formatting for paths and filenames, and equations or small headings when they are genuinely needed. Flag decorative sectioning, long nested lists, tables that do not clarify a contract, repeated headings, horizontal rules, roleplay, preambles, and implementation-style checklists that add reading burden without specifying a required output.
 
 Do not spoon-feed the solution. The instruction should not prescribe an exact algorithm, equation sequence, derivation, feature-engineering recipe, threshold-tuning plan, hyperparameter schedule, convergence checklist, library-call sequence, or other reference-solution procedure when that is the substance of the task. It may state domain facts, definitions, constraints, evaluation targets, and output requirements needed for a fair problem.
 
 Move solver workflow and process details to solution/process.md. That file should exist, be non-empty, and explain the reference workflow's scientific/computational decisions, validation checks, and output generation without exposing hidden answers or verifier-only constants. Do not penalize a task for keeping essential domain equations or definitions in instruction.md when removing them would make the task ambiguous.
 
-PASS if instruction.md is concise and readable, uses restrained Markdown, leaves meaningful method choices to the agent, and keeps reference-solution process details in a substantive solution/process.md. FAIL if it is cluttered, overly procedural, spoon-feeds the reference solution, or omits the process file or replaces it with hidden-answer leakage or a bare "run the reference solution" note."""
+PASS if instruction.md is concise and readable, states the outcome-level
+contract and principal constraints, leaves meaningful method choices to the
+agent, and keeps reference-solution process details in a substantive
+solution/process.md. FAIL if it is cluttered, overly procedural, spoon-feeds
+the reference solution, or omits a deliverable or outcome needed to understand
+the task. Missing verifier calibration constants alone are not a failure."""
 
 [[criteria]]
 name = "solution_quality"
