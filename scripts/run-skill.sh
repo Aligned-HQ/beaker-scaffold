@@ -18,7 +18,7 @@ Skills:
 Options:
   --runner codex|claude|auto  Agent CLI to use (default: auto).
   --target PATH               Explicit target path.
-  --docker-access auto|on|off Allow task-fixer/task-review to reach Docker (default: auto).
+  --docker-access auto|on|off Allow the skill to reach Docker (default: auto).
   --dry-run                   Record the command without invoking an agent.
   -h, --help                  Show this help.
 
@@ -155,18 +155,20 @@ esac
 
 # A workspace-write Codex sandbox generally cannot reach the host Docker
 # socket. Claude Code's normal acceptEdits mode can also stop at a tool
-# permission prompt in non-interactive runs. Task-fixer and task-review both
-# need to inspect task images, so their automatic mode selects a Docker-capable
-# execution mode for the chosen CLI. This does not repair a denied host daemon
-# or authorize an unapproved remote context; use --docker-access off for a
+# permission prompt in non-interactive runs. Every skill here needs to inspect
+# task images — task-fixer and task-review to validate the environment, and
+# trajectory-review to tell a structural environment defect apart from a genuine
+# science failure — so the automatic mode selects a Docker-capable execution
+# mode for the chosen CLI. This does not repair a denied host daemon or
+# authorize an unapproved remote context; use --docker-access off for a
 # static-only run.
 CODEX_SANDBOX="workspace-write"
-if [[ "$RUNNER" = codex && ( "$SKILL" = task-fixer || "$SKILL" = task-review ) && "$DOCKER_ACCESS" != off ]]; then
+if [[ "$RUNNER" = codex && "$DOCKER_ACCESS" != off ]]; then
     CODEX_SANDBOX="danger-full-access"
 fi
 CLAUDE_PERMISSION_MODE="acceptEdits"
 CLAUDE_ALLOW_DANGEROUS=0
-if [[ "$RUNNER" = claude && ( "$SKILL" = task-fixer || "$SKILL" = task-review ) && "$DOCKER_ACCESS" != off ]]; then
+if [[ "$RUNNER" = claude && "$DOCKER_ACCESS" != off ]]; then
     CLAUDE_PERMISSION_MODE="bypassPermissions"
     CLAUDE_ALLOW_DANGEROUS=1
 fi
@@ -576,12 +578,11 @@ can reach scientific databases and tools over HTTP; it is not a licence to
 install dependencies at run time. Keep Python libraries and code vendored in
 the image and do not replace a vendored dependency with a run-time install.
 
-Docker access mode for this invocation is ${DOCKER_ACCESS}. For a Codex
-task-fixer or task-review run, Docker access is provided through the
-wrapper-selected ${CODEX_SANDBOX} sandbox. For a Claude Code task-fixer or
-task-review run, the wrapper selects ${CLAUDE_PERMISSION_MODE} when Docker
-access is not off. Use Docker only for the target task static image validation
-and cleanup. The skill cannot repair a host Docker daemon or grant access to
+Docker access mode for this invocation is ${DOCKER_ACCESS}. For a Codex run,
+Docker access is provided through the wrapper-selected ${CODEX_SANDBOX}
+sandbox. For a Claude Code run, the wrapper selects ${CLAUDE_PERMISSION_MODE}
+when Docker access is not off. Use Docker only for read-only inspection of the
+target task image, the static image validation the skill defines, and cleanup. The skill cannot repair a host Docker daemon or grant access to
 an unapproved remote daemon.
 
 Use the required skill workflow and evidence rules. For task-fixer, make the
