@@ -15,7 +15,7 @@ author_email = "replace@example.com"
 author_organization = "Replace with organization"
 category = "scientific-computing"
 tags = ["scientific-computing", "data-analysis", "python", "pytest"]
-expert_time_estimate_hours = 4.0
+expert_time_estimate_hours = 4.0 # Replace
 
 difficulty_explanation = "Replace this with a concrete explanation of the scientific bottleneck, the realistic data challenge, the practitioner who performs the work, and why the task requires expert judgment rather than a recipe-to-code translation."
 solution_explanation = "Replace this with a high-level summary of the reference solution's actual computational strategy and the key scientific insights it uses; do not describe an implementation that is not present in solution/."
@@ -27,7 +27,7 @@ user = "root"
 # environment_mode is intentionally unset. Do not use separate environment
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 3600.0
 user = "agent"
 
 [environment]

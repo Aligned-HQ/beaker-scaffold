@@ -149,11 +149,13 @@ def print_runner_panel(
     console.print(Panel(body, title=title, border_style=border_style))
 
 
-# The standard campaign has one task and four attempts per agent. Workbench's
-# remote per-agent concurrency is a fan-out multiplier, so keep it at one to
-# avoid turning those four attempts into twelve trials per agent.
+# Local Harbor defaults: four attempts per agent with one worker. Workbench's
+# remote concurrency is a fan-out multiplier, so use a separate remote
+# schedule below to fit the same coverage inside its 60-minute ceiling.
 DEFAULT_CONCURRENCY = 1
 DEFAULT_REPEATS = 4
+REMOTE_DEFAULT_CONCURRENCY = 4
+REMOTE_DEFAULT_REPEATS = 1
 MODAL_PLATFORM = "linux/amd64"
 # Client policy: the Oracle and the agent trials both run with public network.
 DEFAULT_NETWORK_MODE = "public"
@@ -210,6 +212,10 @@ REMOTE_EXECUTION_POLICY_ID = "scientific-offline-v1"
 REMOTE_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 REMOTE_ARCHIVE_PROGRESS_BYTES = 10 * 1024 * 1024
 REMOTE_TRANSFER_TIMEOUT_SECONDS = 30 * 60
+REMOTE_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+REMOTE_REQUEST_RETRY_ATTEMPTS = 5
+REMOTE_REQUEST_RETRY_MIN_SECONDS = 1.0
+REMOTE_REQUEST_RETRY_MAX_SECONDS = 30.0
 LOCAL_DEFAULT_PROGRESS_INTERVAL_SECONDS = 30.0
 ORACLE_SPINNER_FRAMES = ("|", "/", "-", "\\")
 REMOTE_AGENT_CONFIGS = {
@@ -589,11 +595,20 @@ class RemoteInputError(Exception):
 class RemoteClientError(Exception):
     """A sanitized HTTP/service failure from the Workbench Harbor API."""
 
-    def __init__(self, status: int, code: str, message: str, headers: dict[str, str] | None = None):
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+        *,
+        retryable: bool = False,
+    ):
         super().__init__(message)
         self.status = status
         self.code = code
         self.headers = headers or {}
+        self.retryable = retryable
 
 
 def remote_service_base(raw: str) -> str:
@@ -663,8 +678,13 @@ def remote_json_request(
         code = str(details.get("code") or f"http_{error.code}")
         message = str(details.get("message") or f"Workbench Harbor API returned HTTP {error.code}")
         raise RemoteClientError(error.code, code, message[:500], response_headers) from None
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise RemoteClientError(0, "network", "Could not reach the Workbench Harbor service.") from error
+    except (urllib.error.URLError, OSError) as error:
+        raise RemoteClientError(
+            0,
+            "network",
+            "Could not reach the Workbench Harbor service.",
+            retryable=True,
+        ) from error
 
 
 class UploadProgressReader:
@@ -699,7 +719,7 @@ class UploadProgressReader:
             self._file.close()
 
 
-def remote_upload(url: str, archive: bytes | Path, headers: dict[str, str]) -> None:
+def _remote_upload_once(url: str, archive: bytes | Path, headers: dict[str, str]) -> None:
     archive_size = len(archive) if isinstance(archive, bytes) else archive.stat().st_size
     if archive_size < 1 or archive_size > REMOTE_MAX_BUNDLE_BYTES:
         raise RemoteInputError(f"compressed task bundle exceeds {REMOTE_MAX_BUNDLE_BYTES} bytes")
@@ -764,13 +784,46 @@ def remote_upload(url: str, archive: bytes | Path, headers: dict[str, str]) -> N
         elif not RICH_AVAILABLE and uploaded != archive_size:
             report(archive_size)
     except urllib.error.HTTPError as error:
-        raise RemoteClientError(error.code, "upload_failed", "The task bundle upload failed.") from None
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise RemoteClientError(0, "network", "The task bundle upload could not reach Storage.") from error
+        raise RemoteClientError(
+            error.code,
+            "upload_failed",
+            "The task bundle upload failed.",
+            _remote_response_headers(error),
+        ) from None
+    except (urllib.error.URLError, OSError) as error:
+        raise RemoteClientError(
+            0,
+            "network",
+            "The task bundle upload could not reach Storage.",
+            retryable=True,
+        ) from error
     finally:
         request_body.close()
         if progress is not None:
             progress.stop()
+
+
+def remote_upload(url: str, archive: bytes | Path, headers: dict[str, str]) -> None:
+    """Upload a bundle, retrying transient storage failures."""
+    for attempt in range(REMOTE_REQUEST_RETRY_ATTEMPTS):
+        try:
+            _remote_upload_once(url, archive, headers)
+            return
+        except RemoteClientError as error:
+            if not remote_error_is_retryable(error) or attempt + 1 >= REMOTE_REQUEST_RETRY_ATTEMPTS:
+                raise
+            fallback = remote_backoff_delay(attempt)
+            wait = (
+                remote_retry_after(error.headers, fallback)
+                if error.status in REMOTE_RETRYABLE_HTTP_STATUSES
+                else fallback
+            )
+            print(
+                "remote upload temporarily unavailable; "
+                f"retrying in {wait:g}s (attempt {attempt + 1}/{REMOTE_REQUEST_RETRY_ATTEMPTS})",
+                flush=True,
+            )
+            time.sleep(wait)
 
 
 def remote_archive_name_allowed(path: Path, root: Path) -> bool:
@@ -984,6 +1037,58 @@ def remote_retry_after(headers: dict[str, str], fallback: float) -> float:
     except ValueError:
         value = fallback
     return max(0.0, min(value, 60.0))
+
+
+def remote_error_is_retryable(error: RemoteClientError) -> bool:
+    return error.retryable or error.status in REMOTE_RETRYABLE_HTTP_STATUSES
+
+
+def remote_backoff_delay(
+    attempt: int,
+    *,
+    minimum: float = REMOTE_REQUEST_RETRY_MIN_SECONDS,
+    maximum: float = REMOTE_REQUEST_RETRY_MAX_SECONDS,
+) -> float:
+    return min(maximum, max(0.0, minimum) * (2**attempt))
+
+
+def remote_json_request_with_retry(
+    method: str,
+    url: str,
+    token: str,
+    *,
+    payload: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+    operation: str = "remote request",
+) -> tuple[int, dict[str, object], dict[str, str]]:
+    """Retry a bounded set of safe API requests after transient failures."""
+    for attempt in range(REMOTE_REQUEST_RETRY_ATTEMPTS):
+        try:
+            return remote_json_request(
+                method,
+                url,
+                token,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+        except RemoteClientError as error:
+            if not remote_error_is_retryable(error) or attempt + 1 >= REMOTE_REQUEST_RETRY_ATTEMPTS:
+                raise
+            fallback = remote_backoff_delay(attempt)
+            wait = (
+                remote_retry_after(error.headers, fallback)
+                if error.status in REMOTE_RETRYABLE_HTTP_STATUSES
+                else fallback
+            )
+            print(
+                f"{operation} temporarily unavailable; retrying in {wait:g}s "
+                f"(attempt {attempt + 1}/{REMOTE_REQUEST_RETRY_ATTEMPTS})",
+                flush=True,
+            )
+            time.sleep(wait)
+    raise AssertionError("remote request retry loop did not return or raise")
 
 
 REMOTE_STATE_MESSAGES = {
@@ -1322,10 +1427,11 @@ def _poll_remote_status_loop(
                 "GET", remote_url(base, f"/v1/harbor/runs/{run_id}"), token, headers=headers
             )
         except RemoteClientError as error:
-            if error.status in {429, 500, 502, 503, 504}:
+            if remote_error_is_retryable(error):
                 wait = remote_retry_after(error.headers, delay)
+                reason = "network error" if error.retryable else "temporarily unavailable"
                 print(
-                    f"remote poll temporarily unavailable; retrying in {wait:g}s "
+                    f"remote poll {reason}; retrying in {wait:g}s "
                     f"(elapsed {format_elapsed(time.monotonic() - started)})",
                     flush=True,
                 )
@@ -1595,7 +1701,7 @@ def remote_local_archive_ready(base_dir: Path, run_id: str, sha256: str) -> bool
     return destination.is_dir() and marker.is_file() and marker.read_text(encoding="utf-8").strip() == sha256
 
 
-def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, object]) -> Path:
+def _download_remote_archive_once(base_dir: Path, run_id: str, manifest: dict[str, object]) -> Path:
     download_url = manifest.get("download_url")
     sha256 = manifest.get("sha256")
     size_bytes = manifest.get("size_bytes")
@@ -1679,13 +1785,18 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
                             flush=True,
                         )
                         next_progress = min(size_bytes, next_progress + REMOTE_ARCHIVE_PROGRESS_BYTES)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+    except urllib.error.HTTPError as error:
         if download_path is not None:
             try:
                 download_path.unlink()
             except (FileNotFoundError, OSError):
                 pass
-        raise RemoteClientError(0, "archive_download", "The trajectory archive download failed.") from error
+        raise RemoteClientError(
+            error.code,
+            "archive_download",
+            "The trajectory archive download failed.",
+            _remote_response_headers(error),
+        ) from None
     except RemoteClientError:
         if download_path is not None:
             try:
@@ -1693,13 +1804,18 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
             except (FileNotFoundError, OSError):
                 pass
         raise
-    except OSError as error:
+    except (urllib.error.URLError, OSError) as error:
         if download_path is not None:
             try:
                 download_path.unlink()
             except (FileNotFoundError, OSError):
                 pass
-        raise RemoteClientError(0, "archive_download", "The trajectory archive download failed.") from error
+        raise RemoteClientError(
+            0,
+            "archive_download",
+            "The trajectory archive download failed.",
+            retryable=True,
+        ) from error
     try:
         if download_path is None or total != size_bytes:
             raise RemoteClientError(0, "archive_size", "The trajectory archive size did not match its manifest.")
@@ -1725,6 +1841,29 @@ def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, obj
                 pass
             except OSError:
                 pass
+
+
+def download_remote_archive(base_dir: Path, run_id: str, manifest: dict[str, object]) -> Path:
+    """Download a trajectory archive, retrying transient transfer failures."""
+    for attempt in range(REMOTE_REQUEST_RETRY_ATTEMPTS):
+        try:
+            return _download_remote_archive_once(base_dir, run_id, manifest)
+        except RemoteClientError as error:
+            if not remote_error_is_retryable(error) or attempt + 1 >= REMOTE_REQUEST_RETRY_ATTEMPTS:
+                raise
+            fallback = remote_backoff_delay(attempt)
+            wait = (
+                remote_retry_after(error.headers, fallback)
+                if error.status in REMOTE_RETRYABLE_HTTP_STATUSES
+                else fallback
+            )
+            print(
+                "trajectory archive temporarily unavailable; "
+                f"retrying in {wait:g}s (attempt {attempt + 1}/{REMOTE_REQUEST_RETRY_ATTEMPTS})",
+                flush=True,
+            )
+            time.sleep(wait)
+    raise AssertionError("trajectory archive retry loop did not return or raise")
 
 
 def promote_remote_trajectory_archive(
@@ -2281,7 +2420,10 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             )
             print(
                 f"remote submit: bundle ready ({bundle_size} bytes, {bundle_sha256}); "
-                f"requesting {len(agents)} agent job(s) x {args.repeats} attempt(s)",
+                f"requesting {len(agents)} agent job(s) x {args.repeats} attempt(s) "
+                f"x {sum(int(agent['concurrency']) for agent in agents)} fan-out "
+                f"lane(s) = {args.repeats * sum(int(agent['concurrency']) for agent in agents)} "
+                "configured trial(s)",
                 flush=True,
             )
             idempotency_key = state.get("idempotency_key") if isinstance(state.get("idempotency_key"), str) else f"harbor-runner:{uuid4().hex}"
@@ -2301,12 +2443,13 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                 "request_payload": payload,
             })
             try:
-                _, created, _ = remote_json_request(
+                _, created, _ = remote_json_request_with_retry(
                     "POST",
                     remote_url(base, "/v1/harbor/runs"),
                     token,
                     payload=payload,
                     headers={"Idempotency-Key": idempotency_key},
+                    operation="remote submit",
                 )
             except RemoteClientError as error:
                 if error.status in {400, 401, 403, 409, 422}:
@@ -2343,8 +2486,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             bundle_temp_dirs.remove(bundle_temp)
             print(f"remote start: enqueueing {run_id}", flush=True)
             try:
-                _, started, _ = remote_json_request(
-                    "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
+                _, started, _ = remote_json_request_with_retry(
+                    "POST",
+                    remote_url(base, f"/v1/harbor/runs/{run_id}:start"),
+                    token,
+                    operation="remote start",
                 )
             except RemoteClientError as error:
                 if error.status in {400, 401, 403, 409, 422}:
@@ -2357,8 +2503,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             state = load_remote_state(service_run_path) or state
             if state.get("service_url") and state.get("service_url") != base:
                 raise RemoteInputError("the saved remote run belongs to a different --service-url")
-            _, resume_status, _ = remote_json_request(
-                "GET", remote_url(base, f"/v1/harbor/runs/{run_id}"), token
+            _, resume_status, _ = remote_json_request_with_retry(
+                "GET",
+                remote_url(base, f"/v1/harbor/runs/{run_id}"),
+                token,
+                operation="remote resume",
             )
             print(
                 f"remote resume: {run_id} is {resume_status.get('state', 'UNKNOWN')}; "
@@ -2371,8 +2520,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     raise RemoteClientError(409, "upload_not_resumable", "The saved remote run has no resumable upload request.")
                 started = None
                 try:
-                    _, started, _ = remote_json_request(
-                        "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
+                    _, started, _ = remote_json_request_with_retry(
+                        "POST",
+                        remote_url(base, f"/v1/harbor/runs/{run_id}:start"),
+                        token,
+                        operation="remote resume start",
                     )
                 except RemoteClientError as error:
                     if error.status == 409 and error.code == "bundle_not_found":
@@ -2391,12 +2543,13 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     )
                     if bundle_sha256 != state.get("bundle_sha256"):
                         raise RemoteInputError("the local task changed after the remote run was created; submit a new run")
-                    _, created, _ = remote_json_request(
+                    _, created, _ = remote_json_request_with_retry(
                         "POST",
                         remote_url(base, "/v1/harbor/runs"),
                         token,
                         payload=request_payload,
                         headers={"Idempotency-Key": str(state.get("idempotency_key") or "")},
+                        operation="remote resume upload",
                     )
                     if created.get("run_id") != run_id:
                         raise RemoteClientError(0, "response", "The service returned a different run id while resuming upload.")
@@ -2410,8 +2563,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
                     bundle_temp.cleanup()
                     bundle_temp_dirs.remove(bundle_temp)
                     try:
-                        _, started, _ = remote_json_request(
-                            "POST", remote_url(base, f"/v1/harbor/runs/{run_id}:start"), token
+                        _, started, _ = remote_json_request_with_retry(
+                            "POST",
+                            remote_url(base, f"/v1/harbor/runs/{run_id}:start"),
+                            token,
+                            operation="remote resume start",
                         )
                     except RemoteClientError as error:
                         if error.status in {400, 401, 403, 409, 422}:
@@ -2452,8 +2608,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             flush=True,
         )
         print("remote results: fetching Oracle and agent verdicts", flush=True)
-        _, results, _ = remote_json_request(
-            "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/results"), token
+        _, results, _ = remote_json_request_with_retry(
+            "GET",
+            remote_url(base, f"/v1/harbor/runs/{run_id}/results"),
+            token,
+            operation="remote results",
         )
         print_remote_results(results, agent_order=agent_order)
         remote_exit = remote_exit_code(status, results)
@@ -2485,8 +2644,11 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             print("remote archive: waiting for the trajectory manifest", flush=True)
             for attempt in range(20):
                 try:
-                    _, manifest_value, _ = remote_json_request(
-                        "GET", remote_url(base, f"/v1/harbor/runs/{run_id}/trajectories"), token
+                    _, manifest_value, _ = remote_json_request_with_retry(
+                        "GET",
+                        remote_url(base, f"/v1/harbor/runs/{run_id}/trajectories"),
+                        token,
+                        operation="remote archive manifest",
                     )
                     manifest = manifest_value
                     break
@@ -5820,10 +5982,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--repeats",
         type=int,
-        default=DEFAULT_REPEATS,
+        default=None,
         help=(
             "Attempts for this task, passed to harbor --n-attempts "
-            f"(default: {DEFAULT_REPEATS})."
+            f"(default: {REMOTE_DEFAULT_REPEATS} for remote, {DEFAULT_REPEATS} for local)."
         ),
     )
     parser.add_argument(
@@ -5953,8 +6115,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--default-concurrency",
         type=int,
-        default=DEFAULT_CONCURRENCY,
-        help=f"Concurrency for --run agents that don't specify one (default: {DEFAULT_CONCURRENCY}).",
+        default=None,
+        help=(
+            "Concurrency for --run agents that do not specify one "
+            f"(default: {REMOTE_DEFAULT_CONCURRENCY} for remote, "
+            f"{DEFAULT_CONCURRENCY} for local)."
+        ),
     )
     parser.add_argument(
         "--local-concurrency",
@@ -6204,6 +6370,12 @@ def main(argv: list[str]) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.repeats is None:
+        args.repeats = REMOTE_DEFAULT_REPEATS if args.remote else DEFAULT_REPEATS
+    if args.default_concurrency is None:
+        args.default_concurrency = (
+            REMOTE_DEFAULT_CONCURRENCY if args.remote else DEFAULT_CONCURRENCY
+        )
     global MODAL_APP_NAME, MODAL_CLEANUP_ARMED, SHUTDOWN_MODAL_COMPLETED, SHUTDOWN_MODAL_ON_INTERRUPT
     MODAL_APP_NAME = None
     MODAL_CLEANUP_ARMED = False

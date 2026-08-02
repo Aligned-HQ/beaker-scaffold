@@ -18,13 +18,19 @@ the agent can make a reasonable choice of method, numerical routine, library,
 and routine output representation from that context. Do not fail a task merely
 because the instruction omits a conventional implementation detail.
 
-Review the public contract and verifier together. Every material requirement
-that determines whether an answer passes should be visible in `instruction.md`
-at the level of the requested outcome. Private fixtures, independent
-recomputation, and reasonable tolerances are not hidden requirements by
-themselves. Prefer tests that execute the agent's work and accept scientifically
-defensible methods over tests that reproduce one reference algorithm or exact
-intermediate values.
+Review the public contract and verifier together. Material outcome-level
+requirements should be visible in `instruction.md`, but do not require the
+prompt to repeat every numerical verifier constant. In domain tasks, exact
+acceptance thresholds and category boundaries
+may be treated as stable operationalization of an outcome-level decision rather
+than hidden requirements, provided the instruction identifies the decision and
+deliverables at a useful broad level. A compact reference to the task's stated
+acceptance criteria or evaluation rules is enough; do not require every
+criterion label to be listed. Private fixtures,
+independent recomputation, and reasonable tolerances are not hidden
+requirements by themselves. Prefer tests that execute the agent's work and
+accept scientifically defensible methods over tests that reproduce one
+reference algorithm or exact intermediate values.
 
 Mark `FAIL` only for a clear, material violation of a rubric criterion. Treat
 rough guides and examples proportionately; do not turn normal scientific
@@ -40,9 +46,12 @@ When suggesting repairs, use the smallest useful change:
 - If tests enforce a hidden material requirement or one method, simplify them
   to execute the output and verify the shared scientific outcome or essential
   invariants. Accept reasonable alternative methods and representations.
-- If a genuinely required outcome is absent from the instruction, state that
-  outcome clearly without adding a step-by-step recipe. If a conventional
-  detail is inferable, leave it to the agent rather than prescribing it.
+- If a genuinely required outcome or deliverable is absent from the instruction,
+  state that outcome clearly without adding a step-by-step recipe. Do not
+  recommend copying verifier-only calibration constants into a concise
+  contract when the corresponding domain decision is already named. If a
+  conventional detail is inferable, leave it to the agent rather than
+  prescribing it.
 
 Docker may be inspected when it is useful evidence for a rubric criterion such
 as resource configuration, environment hygiene, or reproducibility. If Docker
@@ -104,11 +113,16 @@ If the folder doesn't have this layout, stop and report what's missing — do no
    `functional_verification`, or `outcome_verified`) with citations; do not add
    a new scorecard row.
 4. **Compare contract and verifier.** For each material test assertion, ask
-   whether the requested outcome is visible in `instruction.md`. Check both
-   directions: do the tests verify the important deliverables, and do they
-   introduce any material requirement that a reasonable researcher could not
-   infer? Do not treat a private fixture, recomputation, ordinary tolerance,
-   or conventional serialization as hidden by itself.
+   whether the outcome or deliverable is visible in `instruction.md`. Check
+   both directions: do the tests verify the important deliverables, and do they
+   introduce a contradictory outcome, an undisclosed deliverable, or a method
+   that a reasonable researcher could not infer? Do not require the prompt to
+   restate every exact domain-specific cutoff when it names the corresponding
+   decision. For a field described with a superlative or target value, a finite,
+   valid value satisfying the relevant domain constraint may be a sufficient
+   operationalization. Do not fail alignment solely because the verifier does
+   not prove global maximality or optimality unless optimization itself is the
+   stated objective or changes the decision.
 5. **Consider the real workflow.** For scientific criteria, identify the likely
    researcher, setting, decision, and meaningful judgment from the task files.
    Use that context as evidence for the rubric criterion, but do not create a
@@ -185,13 +199,15 @@ clear, material violation; otherwise give credit for a natural, solvable task.
   for. Record a content-gating defect under the existing functional or
   instruction-alignment criterion; do not create a separate row.
 - **Well specified, aligned, and structured output**: Require the goal,
-  relevant inputs, material constraints, and deliverables to be understandable
-  to a reasonable researcher. Every material pass/fail assertion should map to
-  an outcome in the instruction, but do not require the prompt to spell out a
-  solver tolerance, integration routine, uncertainty algorithm, library, or
-  routine serialization choice. If a test forces one method, hidden value, or
-  non-inferable field, fail the relevant criterion and suggest simplifying the
-  test or stating the needed outcome explicitly.
+  relevant inputs, material constraints, outcome-level decisions, and
+  deliverables to be understandable to a reasonable researcher. Every material
+  pass/fail assertion should map to an outcome in the instruction, but do not
+  require the prompt to spell out each operational cutoff, solver tolerance,
+  integration routine, uncertainty algorithm, library, or routine
+  serialization choice. If a test forces one method, a contradictory outcome,
+  an undisclosed deliverable, or a non-inferable field, fail the relevant
+  criterion and suggest simplifying the test or stating the needed outcome
+  explicitly.
 - **Solvable, solution quality, and reviewability**: Confirm that the supplied
   solution genuinely derives the result, dependencies and data are available,
   and the files give enough scientific context to understand the work. Do not
@@ -212,10 +228,12 @@ clear, material violation; otherwise give credit for a natural, solvable task.
   fabricated level of complexity; do fail textbook, clerical, or purely
   mechanical tasks when the criterion clearly calls for more.
 - **Instruction clarity and minimality**: Keep the prompt natural, concise, and
-  fair. Necessary domain facts, equations, candidate definitions, units,
+  fair. Necessary domain facts, outcome-level definitions, units, principal
   decision criteria, and output requirements are not spoonfeeding. Remove the
-  expected answer and reference-solution recipe, but do not punish an agent for
-  having to make a reasonable guess about method or routine output details.
+  expected answer and reference-solution recipe, but do not punish a task for
+  keeping exact operational cutoffs in the verifier when the associated
+  domain decisions are stated. Do not punish an agent for making a
+  reasonable choice of method or routine output details.
 - **Metadata, resources, explanations, names, and optional README**: Check the
   specific rubric language and judge whether the values are plausible and
   useful. Treat optional material as N/A when the rubric permits it; do not add

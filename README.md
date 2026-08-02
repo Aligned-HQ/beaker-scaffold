@@ -530,6 +530,11 @@ the complete workflow fits within this limit. Set CPU, memory, storage, and GPU
 resources from the actual workflow; a slow computer is not a substitute for
 scientific difficulty.
 
+The bundled remote runner accounts for this ceiling: its default campaign uses
+one attempt across four remote fan-out lanes per agent, which requests four
+concurrent trials per agent and twelve agent trials overall. Local Modal runs
+retain four attempts with one worker unless you override the runner options.
+
 Once the bundle is filled in, run `task-fixer` (step 5). It handles everything
 between your files and a runnable task: bundling the libraries you used so they
 work offline, wiring up paths and permissions, and making the declared artifacts

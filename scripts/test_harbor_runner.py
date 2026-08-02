@@ -987,13 +987,15 @@ def check_default_remote_trial_count() -> None:
     args = SimpleNamespace(
         run=[],
         n_concurrent=None,
-        default_concurrency=harbor_runner.DEFAULT_CONCURRENCY,
-        repeats=harbor_runner.DEFAULT_REPEATS,
+        default_concurrency=harbor_runner.REMOTE_DEFAULT_CONCURRENCY,
+        repeats=harbor_runner.REMOTE_DEFAULT_REPEATS,
     )
     payload = harbor_runner.remote_agent_payload(args)
     assert len(payload) == 3
-    assert all(item["concurrency"] == 1 for item in payload)
-    # Four trials for each of the three agents.
+    assert all(item["concurrency"] == 4 for item in payload)
+    # One attempt in four fan-out lanes produces four concurrent trials per agent.
+    assert all(args.repeats * int(item["concurrency"]) == 4 for item in payload)
+    # Keep the complete default campaign at twelve trials.
     assert args.repeats * sum(int(item["concurrency"]) for item in payload) == 12
 
 
@@ -1087,6 +1089,164 @@ def check_remote_progress_reporting() -> None:
         assert live_output.getvalue() == ""
         assert len(live.updates) == 2
         assert all(refresh for _renderable, refresh in live.updates)
+
+
+def check_remote_poll_retries_network_error() -> None:
+    original_request = harbor_runner.remote_json_request
+    original_sleep = harbor_runner.time.sleep
+    calls = 0
+
+    def fake_remote_json_request(
+        method: str,
+        url: str,
+        token: str,
+        **kwargs: object,
+    ) -> tuple[int, dict[str, object], dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise harbor_runner.RemoteClientError(
+                0,
+                "network",
+                "Could not reach the Workbench Harbor service.",
+                retryable=True,
+            )
+        return 200, {"state": "COMPLETE", "terminal_reason": "AGENTS_COMPLETE"}, {}
+
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-poll-retry-test-") as raw:
+        state_path = Path(raw) / "service-run.json"
+        harbor_runner.remote_json_request = fake_remote_json_request  # type: ignore[assignment]
+        harbor_runner.time.sleep = lambda _seconds: None
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output):
+                status = harbor_runner.poll_remote_status(
+                    "https://example.test/v1",
+                    "hr_retry-test",
+                    "test-token",
+                    minimum_delay=0.25,
+                    maximum_delay=1.0,
+                    progress_interval=30.0,
+                    agent_order=None,
+                    state_path=state_path,
+                    state={},
+                )
+        finally:
+            harbor_runner.remote_json_request = original_request
+            harbor_runner.time.sleep = original_sleep
+
+    assert calls == 2
+    assert status["state"] == "COMPLETE"
+    assert "remote poll network error; retrying" in output.getvalue()
+
+
+def check_remote_request_retries_network_error() -> None:
+    original_request = harbor_runner.remote_json_request
+    original_sleep = harbor_runner.time.sleep
+    calls = 0
+    sleeps: list[float] = []
+
+    def fake_remote_json_request(
+        method: str,
+        url: str,
+        token: str,
+        **kwargs: object,
+    ) -> tuple[int, dict[str, object], dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise harbor_runner.RemoteClientError(
+                0,
+                "network",
+                "Could not reach the Workbench Harbor service.",
+                retryable=True,
+            )
+        return 200, {"ok": True}, {}
+
+    harbor_runner.remote_json_request = fake_remote_json_request  # type: ignore[assignment]
+    harbor_runner.time.sleep = sleeps.append
+    try:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status, body, _headers = harbor_runner.remote_json_request_with_retry(
+                "GET",
+                "https://example.test/v1/harbor/runs/hr_retry-test/results",
+                "test-token",
+                operation="remote results",
+            )
+    finally:
+        harbor_runner.remote_json_request = original_request
+        harbor_runner.time.sleep = original_sleep
+
+    assert calls == 3
+    assert sleeps == [1.0, 2.0]
+    assert status == 200
+    assert body == {"ok": True}
+    assert "remote results temporarily unavailable" in output.getvalue()
+
+
+def check_remote_archive_retries_network_error() -> None:
+    original_download = harbor_runner._download_remote_archive_once
+    original_sleep = harbor_runner.time.sleep
+    attempts = 0
+
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-archive-retry-test-") as raw:
+        destination = Path(raw) / "hr_retry-test"
+        destination.mkdir()
+
+        def fake_download(
+            base_dir: Path,
+            run_id: str,
+            manifest: dict[str, object],
+        ) -> Path:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise harbor_runner.RemoteClientError(
+                    0,
+                    "archive_download",
+                    "The trajectory archive download failed.",
+                    retryable=True,
+                )
+            return destination
+
+        harbor_runner._download_remote_archive_once = fake_download  # type: ignore[assignment]
+        harbor_runner.time.sleep = lambda _seconds: None
+        try:
+            result = harbor_runner.download_remote_archive(Path(raw), "hr_retry-test", {})
+        finally:
+            harbor_runner._download_remote_archive_once = original_download
+            harbor_runner.time.sleep = original_sleep
+
+    assert attempts == 2
+    assert result == destination
+
+
+def check_remote_upload_retries_network_error() -> None:
+    original_upload = harbor_runner._remote_upload_once
+    original_sleep = harbor_runner.time.sleep
+    attempts = 0
+
+    def fake_upload(url: str, archive: bytes | Path, headers: dict[str, str]) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise harbor_runner.RemoteClientError(
+                0,
+                "network",
+                "The task bundle upload could not reach Storage.",
+                retryable=True,
+            )
+
+    harbor_runner._remote_upload_once = fake_upload  # type: ignore[assignment]
+    harbor_runner.time.sleep = lambda _seconds: None
+    try:
+        harbor_runner.remote_upload("https://storage.example/upload", b"bundle", {})
+    finally:
+        harbor_runner._remote_upload_once = original_upload
+        harbor_runner.time.sleep = original_sleep
+
+    assert attempts == 2
 
 
 def check_remote_upload_progress() -> None:
@@ -1322,6 +1482,10 @@ if __name__ == "__main__":
     check_remote_policy_wiring()
     check_default_remote_trial_count()
     check_remote_progress_reporting()
+    check_remote_poll_retries_network_error()
+    check_remote_request_retries_network_error()
+    check_remote_archive_retries_network_error()
+    check_remote_upload_retries_network_error()
     check_remote_upload_progress()
     check_quick_agent_resolution_and_commands()
     check_quick_workspace_is_public_only()
