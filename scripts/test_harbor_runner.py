@@ -723,6 +723,130 @@ def check_remote_oracle_exception_downloads_archive() -> None:
     assert any(url.endswith("/trajectories") for url in requests)
 
 
+def check_remote_agent_exception_replaces_direct_archive() -> None:
+    original_request = harbor_runner.remote_json_request
+    original_poll = harbor_runner.poll_remote_status
+    original_download = harbor_runner.download_remote_archive
+
+    with tempfile.TemporaryDirectory(prefix="beaker-remote-agent-exception-test-") as raw:
+        root = Path(raw)
+        task_root = root / "task"
+        task_root.mkdir()
+        (task_root / "task.toml").write_text("", encoding="utf-8")
+        (task_root / "instruction.md").write_text("task\n", encoding="utf-8")
+        for directory in ("solution", "tests", "environment"):
+            (task_root / directory).mkdir()
+        jobs_dir = root / "harbor-jobs"
+        trajectories_dir = root / "trajectories"
+        trajectories_dir.mkdir()
+        (trajectories_dir / "stale-run.marker").write_text("old", encoding="utf-8")
+        run_id = "hr_123456789012"
+
+        def fake_remote_json_request(
+            method: str,
+            url: str,
+            token: str,
+            **kwargs: object,
+        ) -> tuple[int, dict[str, object], dict[str, str]]:
+            if method == "POST" and url.endswith("/runs"):
+                return 201, {"run_id": run_id, "state": "UPLOADING"}, {}
+            if method == "POST" and url.endswith(":start"):
+                return 200, {"state": "QUEUED"}, {}
+            if method == "GET" and url.endswith("/results"):
+                return 200, {
+                    "oracle": {"verdict": "PASS", "reward": 1},
+                    "summary": {
+                        "agent_trials_expected": 1,
+                        "agent_trials_finished": 1,
+                        "exception_count": 1,
+                    },
+                    "trials": [
+                        {
+                            "agent_id": "codex-gpt-5-6-sol",
+                            "verdict": "EXCEPTION",
+                            "exception": {
+                                "type": "HarborProcessError",
+                                "message": "agent process exited with status 1",
+                            },
+                        }
+                    ],
+                }, {}
+            if method == "GET" and url.endswith("/trajectories"):
+                return 200, {
+                    "size_bytes": 1,
+                    "entry_count": 1,
+                    "archive_scope": harbor_runner.REMOTE_TRAJECTORY_ARCHIVE_SCOPE,
+                }, {}
+            raise AssertionError(f"unexpected remote request: {method} {url}")
+
+        def fake_poll_remote_status(*args: object, **kwargs: object) -> dict[str, object]:
+            return {"state": "COMPLETE", "terminal_reason": "AGENTS_COMPLETE"}
+
+        def fake_download_remote_archive(
+            base_dir: Path,
+            downloaded_run_id: str,
+            manifest: dict[str, object],
+        ) -> Path:
+            archive = base_dir / downloaded_run_id
+            trial_dir = archive / "example-task" / "trajectories" / "codex" / "trial-0"
+            trial_dir.mkdir(parents=True)
+            (trial_dir / "exception.txt").write_text(
+                "agent process exited with status 1\n",
+                encoding="utf-8",
+            )
+            (trial_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            (archive / "example-task" / "trajectories" / "summary.md").write_text(
+                "# remote partial summary\n",
+                encoding="utf-8",
+            )
+            return archive
+
+        args = SimpleNamespace(
+            env="modal",
+            archive_only=False,
+            oracle_sort=False,
+            dry_run=False,
+            env_file=[],
+            agent_env=[],
+            verifier_env=[],
+            environment_kwarg=[],
+            agent_kwarg=[],
+            artifact=[],
+            modal_secret=[],
+            workbench_token="test-token",
+            remote_poll_min=0.25,
+            remote_poll_max=1.0,
+            remote_progress_interval_sec=30.0,
+            service_url="https://example.test/v1",
+            run=[],
+            n_concurrent=None,
+            default_concurrency=3,
+            repeats=1,
+            jobs_dir=jobs_dir,
+            run_id="remote-agent-exception",
+            resume=False,
+            archive_completed=True,
+            cancel_on_interrupt=True,
+            pass_threshold=1.0,
+            completed_trajectories_dir=trajectories_dir,
+        )
+
+        harbor_runner.remote_json_request = fake_remote_json_request  # type: ignore[assignment]
+        harbor_runner.poll_remote_status = fake_poll_remote_status  # type: ignore[assignment]
+        harbor_runner.download_remote_archive = fake_download_remote_archive  # type: ignore[assignment]
+        try:
+            assert harbor_runner.run_remote(task_root, args) == 4
+        finally:
+            harbor_runner.remote_json_request = original_request
+            harbor_runner.poll_remote_status = original_poll
+            harbor_runner.download_remote_archive = original_download
+
+        assert (trajectories_dir / "codex" / "trial-0" / "exception.txt").is_file()
+        assert (trajectories_dir / "summary.md").is_file()
+        assert not (trajectories_dir / "stale-run.marker").exists()
+        assert not (trajectories_dir / run_id).exists()
+
+
 def check_remote_service_error_skips_archive_download() -> None:
     original_request = harbor_runner.remote_json_request
     original_poll = harbor_runner.poll_remote_status
@@ -1471,6 +1595,7 @@ if __name__ == "__main__":
     check_remote_archive_flag_matches_local_behavior()
     check_remote_start_error_preserves_service_message()
     check_remote_oracle_exception_downloads_archive()
+    check_remote_agent_exception_replaces_direct_archive()
     check_remote_service_error_skips_archive_download()
     check_sigterm_enters_cleanup_path()
     check_smoke_mode_wiring()

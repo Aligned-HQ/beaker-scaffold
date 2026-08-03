@@ -628,15 +628,14 @@ Before the required campaign, you can optionally
 `harbor_runner.py` runs this repository's single `task/` directory through an
 Oracle gate (runs your own solve.py and the tests) and then the three configured agent jobs.
 
-When the Oracle and every agent trial finish successfully without job exits or
-trial exceptions, the runner writes `harbor-jobs/<run-id>.summary.json` and
-`.summary.md`, then replaces the direct `trajectories/` contents with
-`trajectories/oracle/`, `trajectories/claude-code/`,
-`trajectories/codex/`, `trajectories/antigravity/` (the Gemini agent), and
-`trajectories/summary.md`. Incomplete agent runs remain under a run-specific
-trajectory archive for inspection and do not replace a previous successful
-direct archive. If the Oracle fails, the agent jobs are not started; inspect
-the Oracle gate summary or runner log printed at the end.
+When the remote archive contains agent trial evidence, the runner writes
+`harbor-jobs/<run-id>.summary.json` and `.summary.md`, then replaces the direct
+`trajectories/` contents with whatever Oracle and agent evidence is available,
+including trials that ended with exceptions. Oracle-only exceptions and service
+failures before any agent trial remain under a run-specific trajectory archive
+for inspection and do not replace a previous direct archive. If the Oracle
+fails, the agent jobs are not started; inspect the Oracle gate summary or runner
+log printed at the end.
 
 ## 10. Run the trajectory-review script
 

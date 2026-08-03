@@ -1870,12 +1870,12 @@ def promote_remote_trajectory_archive(
     archive_destination: Path,
     trajectories_dir: Path,
 ) -> Path:
-    """Promote a successful remote archive into the direct local layout.
+    """Promote available remote agent evidence into the direct local layout.
 
     Workbench archives retain a run root and task root so the download can be
     validated and partial runs can be inspected. The local authoring workflow
-    exposes only the task's direct ``trajectories/`` contents after a
-    successful, exception-free result.
+    exposes the task's direct ``trajectories/`` contents whenever agent trial
+    evidence is available, including trials that ended with exceptions.
     """
     archive_destination = archive_destination.resolve()
     trajectories_dir = trajectories_dir.expanduser().resolve()
@@ -1955,7 +1955,7 @@ def promote_remote_trajectory_archive(
     finally:
         shutil.rmtree(stage_parent, ignore_errors=True)
     print(
-        f"trajectory archive: promoted successful direct output -> {trajectories_dir}",
+        f"trajectory archive: promoted direct output -> {trajectories_dir}",
         flush=True,
     )
     return trajectories_dir
@@ -2135,6 +2135,32 @@ def remote_results_have_agent_trials(results: dict[str, object]) -> bool:
         return True
     trials = results.get("trials")
     return isinstance(trials, list) and any(isinstance(trial, dict) for trial in trials)
+
+
+def remote_agent_archive_should_replace_direct(
+    status: dict[str, object],
+    results: dict[str, object],
+) -> bool:
+    """Return whether available agent evidence should replace direct output.
+
+    An agent trial can finish with an exception, which makes the remote run
+    nonzero even though its trajectory archive is the evidence we need to
+    review. Oracle-only exceptions stay run-scoped because no agent campaign
+    was produced for them.
+    """
+    if status.get("state") == "ORACLE_EXCEPTION":
+        return False
+    if remote_results_have_agent_trials(results):
+        return True
+
+    # Some COMPLETE/ERROR responses report the agent exception only in the
+    # aggregate count. Treat that as agent evidence; ERROR-with-no-trials is
+    # handled before archive download by remote_error_has_no_agent_trials().
+    summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
+    return (
+        status.get("state") in {"COMPLETE", "ERROR"}
+        and remote_count(summary.get("exception_count")) > 0
+    )
 
 
 def remote_error_has_no_agent_trials(
@@ -2670,7 +2696,7 @@ def run_remote(task_root: Path, args: argparse.Namespace) -> int:
             )
             archive_destination = download_remote_archive(args.completed_trajectories_dir, run_id, manifest)
             archive_downloaded = True
-            if remote_exit == 0:
+            if remote_exit == 0 or remote_agent_archive_should_replace_direct(status, results):
                 archive_destination = promote_remote_trajectory_archive(
                     archive_destination,
                     args.completed_trajectories_dir,
