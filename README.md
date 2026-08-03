@@ -6,6 +6,8 @@ This README covers the main authoring path. Supplemental reference guides are
 linked at the end. The same instructions are also available in this
 [Google Document](https://docs.google.com/document/d/1EOXHxE6kHObi7E-NY54DZwdSaDAAzHwqJ9In21nLtGE/edit?usp=sharing).
 
+A sample task is provided for reference: [Beaker Sample](https://github.com/Aligned-HQ/beaker-sample)
+
 
 ## Motivation and intended flow
 
